@@ -12,12 +12,13 @@ import (
 )
 
 var (
-	ErrInvalidRoomName = errors.New("room name is required")
-	ErrRoomNotFound    = errors.New("room not found")
-	ErrRoomUnavailable = errors.New("room is not available")
-	ErrRoomFull        = errors.New("room is full")
-	ErrNotParticipant  = errors.New("user is not a room participant")
-	ErrNotOwner        = errors.New("user is not the room owner")
+	ErrInvalidRoomName  = errors.New("room name is required")
+	ErrRoomNotFound     = errors.New("room not found")
+	ErrRoomUnavailable  = errors.New("room is not available")
+	ErrRoomFull         = errors.New("room is full")
+	ErrNotParticipant   = errors.New("user is not a room participant")
+	ErrNotOwner         = errors.New("user is not the room owner")
+	ErrNotEnoughPlayers = errors.New("not enough players to start")
 )
 
 type Service struct {
@@ -173,6 +174,14 @@ func (s *Service) StartRoom(user domain.UserSession, roomID string) (domain.Room
 
 	if room.OwnerID != user.ID {
 		return domain.Room{}, ErrNotOwner
+	}
+
+	if !domain.IsLobbyStatus(room.Status) {
+		return domain.Room{}, ErrRoomUnavailable
+	}
+
+	if len(room.Players) < domain.MinPlayersToStart {
+		return domain.Room{}, ErrNotEnoughPlayers
 	}
 
 	room.Status = domain.RoomStatusInProgress

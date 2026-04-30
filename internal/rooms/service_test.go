@@ -93,6 +93,15 @@ func TestStartRoomMovesToInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRoom returned error: %v", err)
 	}
+	for _, joiner := range []domain.UserSession{
+		{ID: "user-2", Nickname: "Joiner2"},
+		{ID: "user-3", Nickname: "Joiner3"},
+		{ID: "user-4", Nickname: "Joiner4"},
+	} {
+		if _, err := service.JoinRoom(joiner, room.ID); err != nil {
+			t.Fatalf("JoinRoom returned error: %v", err)
+		}
+	}
 
 	startedRoom, err := service.StartRoom(user, room.ID)
 	if err != nil {
@@ -100,6 +109,20 @@ func TestStartRoomMovesToInProgress(t *testing.T) {
 	}
 	if startedRoom.Status != domain.RoomStatusInProgress {
 		t.Fatalf("expected in_progress status, got %q", startedRoom.Status)
+	}
+}
+
+func TestStartRoomRequiresMinimumPlayers(t *testing.T) {
+	service := NewService()
+	user := domain.UserSession{ID: "user-1", Nickname: "DonVito"}
+
+	room, err := service.CreateRoom(user, "Night table", 10)
+	if err != nil {
+		t.Fatalf("CreateRoom returned error: %v", err)
+	}
+
+	if _, err := service.StartRoom(user, room.ID); err != ErrNotEnoughPlayers {
+		t.Fatalf("expected ErrNotEnoughPlayers, got %v", err)
 	}
 }
 
@@ -118,5 +141,31 @@ func TestStartRoomRequiresOwner(t *testing.T) {
 
 	if _, err := service.StartRoom(joiner, room.ID); err != ErrNotOwner {
 		t.Fatalf("expected ErrNotOwner, got %v", err)
+	}
+}
+
+func TestStartRoomRejectsAlreadyStartedRoom(t *testing.T) {
+	service := NewService()
+	owner := domain.UserSession{ID: "owner", Nickname: "Owner"}
+
+	room, err := service.CreateRoom(owner, "Night table", 10)
+	if err != nil {
+		t.Fatalf("CreateRoom returned error: %v", err)
+	}
+	for _, joiner := range []domain.UserSession{
+		{ID: "user-2", Nickname: "Joiner2"},
+		{ID: "user-3", Nickname: "Joiner3"},
+		{ID: "user-4", Nickname: "Joiner4"},
+	} {
+		if _, err := service.JoinRoom(joiner, room.ID); err != nil {
+			t.Fatalf("JoinRoom returned error: %v", err)
+		}
+	}
+
+	if _, err := service.StartRoom(owner, room.ID); err != nil {
+		t.Fatalf("first StartRoom returned error: %v", err)
+	}
+	if _, err := service.StartRoom(owner, room.ID); err != ErrRoomUnavailable {
+		t.Fatalf("expected ErrRoomUnavailable, got %v", err)
 	}
 }

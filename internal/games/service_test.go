@@ -2,6 +2,7 @@ package games
 
 import (
 	"testing"
+	"time"
 
 	"mafia-server/internal/domain"
 )
@@ -30,6 +31,15 @@ func TestStartGameCreatesNightRoundOneSnapshot(t *testing.T) {
 	}
 	if game.Round != 1 {
 		t.Fatalf("expected round 1, got %d", game.Round)
+	}
+	if game.PhaseStartedAt == "" {
+		t.Fatal("expected phase start timestamp")
+	}
+	if game.PhaseEndsAt == "" {
+		t.Fatal("expected phase end timestamp")
+	}
+	if game.PhaseDurationSeconds != 45 {
+		t.Fatalf("expected night duration 45, got %d", game.PhaseDurationSeconds)
 	}
 	if len(game.Players) != 2 {
 		t.Fatalf("expected 2 players, got %d", len(game.Players))
@@ -95,6 +105,78 @@ func TestSetPhaseUpdatesPhaseAndRound(t *testing.T) {
 	}
 	if game.Round != 2 {
 		t.Fatalf("expected next night to increment round to 2, got %d", game.Round)
+	}
+}
+
+func TestAdvancePhaseFollowsFixedOrder(t *testing.T) {
+	service := NewService()
+	room := domain.Room{
+		ID:      "room-1",
+		OwnerID: "user-1",
+		Players: []domain.RoomPlayer{
+			{ID: "user-1", Nickname: "Owner", IsOwner: true},
+			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
+			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
+			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
+		},
+	}
+	service.StartGame(room)
+
+	game, err := service.AdvancePhase(room.ID)
+	if err != nil {
+		t.Fatalf("AdvancePhase day returned error: %v", err)
+	}
+	if game.Phase != domain.GamePhaseDay {
+		t.Fatalf("expected day phase, got %q", game.Phase)
+	}
+	if game.PhaseDurationSeconds != 90 {
+		t.Fatalf("expected day duration 90, got %d", game.PhaseDurationSeconds)
+	}
+
+	game, err = service.AdvancePhase(room.ID)
+	if err != nil {
+		t.Fatalf("AdvancePhase voting returned error: %v", err)
+	}
+	if game.Phase != domain.GamePhaseVoting {
+		t.Fatalf("expected voting phase, got %q", game.Phase)
+	}
+
+	game, err = service.AdvancePhase(room.ID)
+	if err != nil {
+		t.Fatalf("AdvancePhase night returned error: %v", err)
+	}
+	if game.Phase != domain.GamePhaseNight {
+		t.Fatalf("expected night phase, got %q", game.Phase)
+	}
+	if game.Round != 2 {
+		t.Fatalf("expected round 2, got %d", game.Round)
+	}
+}
+
+func TestAdvanceExpiredAdvancesTimedOutGame(t *testing.T) {
+	service := NewService()
+	room := domain.Room{
+		ID:      "room-1",
+		OwnerID: "user-1",
+		Players: []domain.RoomPlayer{
+			{ID: "user-1", Nickname: "Owner", IsOwner: true},
+			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
+			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
+			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
+		},
+	}
+	started := service.StartGame(room)
+	phaseEndsAt, err := time.Parse(time.RFC3339Nano, started.PhaseEndsAt)
+	if err != nil {
+		t.Fatalf("parse phase end: %v", err)
+	}
+
+	advanced := service.AdvanceExpired(phaseEndsAt.Add(time.Second))
+	if len(advanced) != 1 {
+		t.Fatalf("expected 1 advanced game, got %d", len(advanced))
+	}
+	if advanced[0].Phase != domain.GamePhaseDay {
+		t.Fatalf("expected day phase, got %q", advanced[0].Phase)
 	}
 }
 
@@ -167,7 +249,31 @@ func TestInspectCreatesImmediateResultEvent(t *testing.T) {
 	if result.Type != "inspect.resolved" {
 		t.Fatalf("expected inspect.resolved event, got %q", result.Type)
 	}
-	if result.Message != "Комісар перевірив Mafia: роль Мафія." {
+	if result.Message != "Комісар перевірив Mafia: сторона Мафія." {
+		t.Fatalf("unexpected inspect result message: %q", result.Message)
+	}
+}
+
+func TestInspectReportsTownSideForDoctor(t *testing.T) {
+	service := NewService()
+	room := domain.Room{
+		ID:      "room-1",
+		OwnerID: "user-1",
+		Players: []domain.RoomPlayer{
+			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
+			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
+			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
+		},
+	}
+	service.StartGame(room)
+
+	game, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-3")
+	if err != nil {
+		t.Fatalf("inspect returned error: %v", err)
+	}
+
+	result := game.Events[len(game.Events)-1]
+	if result.Message != "Комісар перевірив Doctor: сторона Мирний." {
 		t.Fatalf("unexpected inspect result message: %q", result.Message)
 	}
 }

@@ -1,8 +1,10 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"mafia-server/internal/auth"
 	"mafia-server/internal/domain"
@@ -42,9 +44,11 @@ func NewHandler() http.Handler {
 	mux.HandleFunc("POST /api/rooms/{roomId}/start", handler.startRoom)
 	mux.HandleFunc("GET /api/games/{roomId}", handler.getGame)
 	mux.HandleFunc("POST /api/games/{roomId}/phase", handler.setGamePhase)
+	mux.HandleFunc("POST /api/games/{roomId}/next-phase", handler.advanceGamePhase)
 	mux.HandleFunc("POST /api/games/{roomId}/actions", handler.submitGameAction)
 	mux.Handle("GET /ws", handler.realtime)
 
+	handler.startPhaseTicker(context.Background())
 	return httpx.WithCORS(mux)
 }
 
@@ -258,6 +262,38 @@ func (h *Handler) setGamePhase(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
 }
 
+func (h *Handler) advanceGamePhase(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	roomID := r.PathValue("roomId")
+	room, ok := h.rooms.GetRoom(roomID)
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, rooms.ErrRoomNotFound.Error())
+		return
+	}
+
+	if !isRoomParticipant(room, user.ID) {
+		httpx.WriteError(w, http.StatusForbidden, rooms.ErrNotParticipant.Error())
+		return
+	}
+	if room.OwnerID != user.ID {
+		httpx.WriteError(w, http.StatusForbidden, rooms.ErrNotOwner.Error())
+		return
+	}
+
+	game, err := h.games.AdvancePhase(roomID)
+	if err != nil {
+		h.writeGameError(w, err)
+		return
+	}
+
+	h.broadcastGameUpdated(game.RoomID)
+	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
+}
+
 type submitGameActionRequest struct {
 	Type     domain.GameActionType `json:"type"`
 	TargetID string                `json:"targetId"`
@@ -343,6 +379,23 @@ func (h *Handler) broadcastGameUpdated(roomID string) {
 	})
 }
 
+func (h *Handler) startPhaseTicker(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case now := <-ticker.C:
+				for _, game := range h.games.AdvanceExpired(now) {
+					h.broadcastGameUpdated(game.RoomID)
+				}
+			}
+		}
+	}()
+}
+
 func isRoomParticipant(room domain.Room, userID string) bool {
 	for _, player := range room.Players {
 		if player.ID == userID {
@@ -365,6 +418,8 @@ func (h *Handler) writeRoomError(w http.ResponseWriter, err error) {
 		httpx.WriteError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, rooms.ErrNotOwner):
 		httpx.WriteError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, rooms.ErrNotEnoughPlayers):
+		httpx.WriteError(w, http.StatusConflict, err.Error())
 	default:
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 	}

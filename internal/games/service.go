@@ -29,6 +29,13 @@ var validPhases = []domain.GamePhase{
 	domain.GamePhaseFinal,
 }
 
+var phaseDurations = map[domain.GamePhase]time.Duration{
+	domain.GamePhaseNight:  45 * time.Second,
+	domain.GamePhaseDay:    90 * time.Second,
+	domain.GamePhaseVoting: 35 * time.Second,
+	domain.GamePhaseFinal:  0,
+}
+
 var rolePattern = []domain.GameRole{
 	domain.GameRoleCommissioner,
 	domain.GameRoleMafia,
@@ -62,16 +69,17 @@ func (s *Service) StartGame(room domain.Room) domain.Game {
 		return cloneGame(game)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC()
 	game := domain.Game{
-		ID:        ids.NewID("game"),
-		RoomID:    room.ID,
-		Phase:     domain.GamePhaseNight,
-		Round:     1,
-		Players:   playersFromRoom(room),
-		StartedAt: now,
-		UpdatedAt: now,
+		ID:      ids.NewID("game"),
+		RoomID:  room.ID,
+		Phase:   domain.GamePhaseNight,
+		Round:   1,
+		Players: playersFromRoom(room),
 	}
+	setPhaseWindow(&game, domain.GamePhaseNight, now)
+	game.StartedAt = formatTime(now)
+	game.UpdatedAt = formatTime(now)
 
 	s.byRoom[room.ID] = game
 	return cloneGame(game)
@@ -129,26 +137,52 @@ func (s *Service) SetPhase(roomID string, phase domain.GamePhase) (domain.Game, 
 		return domain.Game{}, ErrGameNotFound
 	}
 
-	if phase != game.Phase {
-		resolvePhase(&game)
-	}
-
-	if phase == domain.GamePhaseNight && game.Phase != domain.GamePhaseNight {
-		game.Round++
-	}
-
-	game.Phase = phase
-	if game.Phase != domain.GamePhaseFinal {
-		maybeFinishGame(&game)
-	}
-	game.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	transitionToPhase(&game, phase, time.Now().UTC())
 	s.byRoom[roomID] = game
 	return cloneGame(game), nil
+}
+
+func (s *Service) AdvancePhase(roomID string) (domain.Game, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	game, ok := s.byRoom[roomID]
+	if !ok {
+		return domain.Game{}, ErrGameNotFound
+	}
+
+	advancePhase(&game, time.Now().UTC(), "manual")
+	s.byRoom[roomID] = game
+	return cloneGame(game), nil
+}
+
+func (s *Service) AdvanceExpired(now time.Time) []domain.Game {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	advanced := make([]domain.Game, 0)
+	for roomID, game := range s.byRoom {
+		if game.Phase == domain.GamePhaseFinal || game.PhaseEndsAt == "" {
+			continue
+		}
+
+		phaseEndsAt, err := time.Parse(time.RFC3339Nano, game.PhaseEndsAt)
+		if err != nil || now.Before(phaseEndsAt) {
+			continue
+		}
+
+		advancePhase(&game, now.UTC(), "timer")
+		s.byRoom[roomID] = game
+		advanced = append(advanced, cloneGame(game))
+	}
+
+	return advanced
 }
 
 func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.GameActionType, targetID string) (domain.Game, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().UTC()
 
 	game, ok := s.byRoom[roomID]
 	if !ok {
@@ -173,11 +207,14 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 	if !target.IsAlive {
 		return domain.Game{}, ErrTargetDead
 	}
+	if isPhaseExpired(game, now) {
+		return domain.Game{}, ErrActionUnavailable
+	}
 	if err := validateAction(game.Phase, actor.Role, actionType, actor.ID == target.ID); err != nil {
 		return domain.Game{}, err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	nowText := formatTime(now)
 	action := domain.GameAction{
 		ID:             ids.NewID("action"),
 		Type:           actionType,
@@ -187,7 +224,7 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 		TargetNickname: target.Nickname,
 		Phase:          game.Phase,
 		Round:          game.Round,
-		CreatedAt:      now,
+		CreatedAt:      nowText,
 	}
 
 	game.Actions = upsertAction(game.Actions, action)
@@ -199,23 +236,99 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 		Round:     game.Round,
 		ActorID:   actor.ID,
 		TargetID:  target.ID,
-		CreatedAt: now,
+		CreatedAt: nowText,
 	})
 	if actionType == domain.GameActionInspect {
 		game.Events = append(game.Events, domain.GameEvent{
 			ID:        ids.NewID("event"),
 			Type:      "inspect.resolved",
-			Message:   fmt.Sprintf("Комісар перевірив %s: роль %s.", target.Nickname, roleLabel(target.Role)),
+			Message:   fmt.Sprintf("Комісар перевірив %s: сторона %s.", target.Nickname, inspectLabel(target.Role)),
 			Phase:     game.Phase,
 			Round:     game.Round,
 			ActorID:   actor.ID,
 			TargetID:  target.ID,
-			CreatedAt: now,
+			CreatedAt: nowText,
 		})
 	}
-	game.UpdatedAt = now
+	game.UpdatedAt = nowText
 	s.byRoom[roomID] = game
 	return cloneGame(game), nil
+}
+
+func transitionToPhase(game *domain.Game, phase domain.GamePhase, now time.Time) {
+	if phase != game.Phase {
+		resolvePhase(game)
+	}
+	if phase == domain.GamePhaseNight && game.Phase != domain.GamePhaseNight {
+		game.Round++
+	}
+
+	setPhaseWindow(game, phase, now)
+	if game.Phase != domain.GamePhaseFinal {
+		maybeFinishGame(game)
+		if game.Phase == domain.GamePhaseFinal {
+			setPhaseWindow(game, domain.GamePhaseFinal, now)
+		}
+	}
+	game.UpdatedAt = formatTime(now)
+}
+
+func advancePhase(game *domain.Game, now time.Time, reason string) {
+	if game.Phase == domain.GamePhaseFinal {
+		return
+	}
+
+	nextPhase := nextPhase(game.Phase)
+	transitionToPhase(game, nextPhase, now)
+	if game.Phase == domain.GamePhaseFinal {
+		return
+	}
+
+	message := "Фаза змінена."
+	if reason == "timer" {
+		message = "Час фази завершився. Сервер перейшов до наступної фази."
+	}
+	game.Events = append(game.Events, newGameEvent("phase.advanced", message, game.Phase, game.Round, "", ""))
+	game.UpdatedAt = formatTime(now)
+}
+
+func nextPhase(phase domain.GamePhase) domain.GamePhase {
+	switch phase {
+	case domain.GamePhaseNight:
+		return domain.GamePhaseDay
+	case domain.GamePhaseDay:
+		return domain.GamePhaseVoting
+	case domain.GamePhaseVoting:
+		return domain.GamePhaseNight
+	default:
+		return domain.GamePhaseFinal
+	}
+}
+
+func setPhaseWindow(game *domain.Game, phase domain.GamePhase, now time.Time) {
+	duration := phaseDurations[phase]
+	game.Phase = phase
+	game.PhaseStartedAt = formatTime(now)
+	game.PhaseDurationSeconds = int(duration.Seconds())
+	if duration <= 0 {
+		game.PhaseEndsAt = ""
+		return
+	}
+
+	game.PhaseEndsAt = formatTime(now.Add(duration))
+}
+
+func isPhaseExpired(game domain.Game, now time.Time) bool {
+	if game.Phase == domain.GamePhaseFinal || game.PhaseEndsAt == "" {
+		return false
+	}
+
+	phaseEndsAt, err := time.Parse(time.RFC3339Nano, game.PhaseEndsAt)
+	return err == nil && !now.Before(phaseEndsAt)
+}
+
+func formatTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func playersFromRoom(room domain.Room) []domain.GamePlayer {
@@ -507,17 +620,12 @@ func newGameEvent(eventType string, message string, phase domain.GamePhase, roun
 	}
 }
 
-func roleLabel(role domain.GameRole) string {
-	switch role {
-	case domain.GameRoleMafia:
+func inspectLabel(role domain.GameRole) string {
+	if role == domain.GameRoleMafia {
 		return "Мафія"
-	case domain.GameRoleCommissioner:
-		return "Комісар"
-	case domain.GameRoleDoctor:
-		return "Лікар"
-	default:
-		return "Мирний"
 	}
+
+	return "Мирний"
 }
 
 func inspectedTargetsBy(actions []domain.GameAction, actorID string) map[string]struct{} {

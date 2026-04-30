@@ -13,6 +13,7 @@ Current state:
 8. Owner-only room start and owner-only phase controls.
 9. Server-side dev game actions for night moves and voting.
 10. Per-player private game snapshots for roles, private actions and inspect results.
+11. Server phase timer with fixed phase order and automatic phase advancement.
 
 Not implemented yet:
 1. PostgreSQL persistence.
@@ -114,10 +115,13 @@ curl -X POST http://localhost:8080/api/rooms \
 - `POST /api/rooms/{roomId}/leave`
 - `POST /api/rooms/{roomId}/start` owner only
 
+Starting a room requires at least 4 players in the current dev rules.
+
 ### Games
 
 - `GET /api/games/{roomId}`
 - `POST /api/games/{roomId}/phase` owner only
+- `POST /api/games/{roomId}/next-phase` owner only
 - `POST /api/games/{roomId}/actions`
 
 `GET /api/games/{roomId}` returns a private view for the authenticated player:
@@ -132,6 +136,9 @@ Current game snapshot starts with:
 
 - `phase: night`
 - `round: 1`
+- `phaseStartedAt`
+- `phaseEndsAt`
+- `phaseDurationSeconds`
 - room players copied into game players
 - deterministic dev roles assigned by seat order:
   - commissioner
@@ -156,6 +163,19 @@ Allowed phases:
 - `final`
 
 Switching from a non-night phase back to `night` increments the game round.
+
+Preferred phase flow:
+
+- `night -> day -> voting -> night`
+- `POST /api/games/{roomId}/next-phase` follows this order.
+- The backend also advances expired phases automatically.
+
+Default dev phase durations:
+
+- `night`: 45 seconds
+- `day`: 90 seconds
+- `voting`: 35 seconds
+- `final`: no timer
 
 Submit action:
 

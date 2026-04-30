@@ -11,8 +11,9 @@ const (
 )
 
 const (
-	MinPlayersInRoom = 6
-	MaxPlayersInRoom = 16
+	MinPlayersInRoom  = 6
+	MaxPlayersInRoom  = 16
+	MinPlayersToStart = 4
 )
 
 type UserSession struct {
@@ -96,15 +97,18 @@ type GameEvent struct {
 }
 
 type Game struct {
-	ID        string       `json:"id"`
-	RoomID    string       `json:"roomId"`
-	Phase     GamePhase    `json:"phase"`
-	Round     int          `json:"round"`
-	Players   []GamePlayer `json:"players"`
-	Actions   []GameAction `json:"actions"`
-	Events    []GameEvent  `json:"events"`
-	StartedAt string       `json:"startedAt"`
-	UpdatedAt string       `json:"updatedAt"`
+	ID                   string       `json:"id"`
+	RoomID               string       `json:"roomId"`
+	Phase                GamePhase    `json:"phase"`
+	Round                int          `json:"round"`
+	PhaseStartedAt       string       `json:"phaseStartedAt"`
+	PhaseEndsAt          string       `json:"phaseEndsAt"`
+	PhaseDurationSeconds int          `json:"phaseDurationSeconds"`
+	Players              []GamePlayer `json:"players"`
+	Actions              []GameAction `json:"actions"`
+	Events               []GameEvent  `json:"events"`
+	StartedAt            string       `json:"startedAt"`
+	UpdatedAt            string       `json:"updatedAt"`
 }
 
 func IsLobbyStatus(status RoomStatus) bool {
