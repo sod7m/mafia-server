@@ -46,11 +46,53 @@ const (
 	GamePhaseFinal  GamePhase = "final"
 )
 
+type GameRole string
+
+const (
+	GameRoleCivilian     GameRole = "civilian"
+	GameRoleMafia        GameRole = "mafia"
+	GameRoleCommissioner GameRole = "commissioner"
+	GameRoleDoctor       GameRole = "doctor"
+)
+
+type GameActionType string
+
+const (
+	GameActionMafiaKill GameActionType = "mafia_kill"
+	GameActionInspect   GameActionType = "inspect"
+	GameActionHeal      GameActionType = "heal"
+	GameActionVote      GameActionType = "vote"
+)
+
 type GamePlayer struct {
-	ID       string `json:"id"`
-	Nickname string `json:"nickname"`
-	IsOwner  bool   `json:"isOwner"`
-	IsAlive  bool   `json:"isAlive"`
+	ID       string   `json:"id"`
+	Nickname string   `json:"nickname"`
+	IsOwner  bool     `json:"isOwner"`
+	Role     GameRole `json:"role,omitempty"`
+	IsAlive  bool     `json:"isAlive"`
+}
+
+type GameAction struct {
+	ID             string         `json:"id"`
+	Type           GameActionType `json:"type"`
+	ActorID        string         `json:"actorId"`
+	ActorNickname  string         `json:"actorNickname"`
+	TargetID       string         `json:"targetId"`
+	TargetNickname string         `json:"targetNickname"`
+	Phase          GamePhase      `json:"phase"`
+	Round          int            `json:"round"`
+	CreatedAt      string         `json:"createdAt"`
+}
+
+type GameEvent struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	Message   string    `json:"message"`
+	Phase     GamePhase `json:"phase"`
+	Round     int       `json:"round"`
+	ActorID   string    `json:"actorId,omitempty"`
+	TargetID  string    `json:"targetId,omitempty"`
+	CreatedAt string    `json:"createdAt"`
 }
 
 type Game struct {
@@ -59,6 +101,8 @@ type Game struct {
 	Phase     GamePhase    `json:"phase"`
 	Round     int          `json:"round"`
 	Players   []GamePlayer `json:"players"`
+	Actions   []GameAction `json:"actions"`
+	Events    []GameEvent  `json:"events"`
 	StartedAt string       `json:"startedAt"`
 	UpdatedAt string       `json:"updatedAt"`
 }

@@ -42,6 +42,7 @@ func NewHandler() http.Handler {
 	mux.HandleFunc("POST /api/rooms/{roomId}/start", handler.startRoom)
 	mux.HandleFunc("GET /api/games/{roomId}", handler.getGame)
 	mux.HandleFunc("POST /api/games/{roomId}/phase", handler.setGamePhase)
+	mux.HandleFunc("POST /api/games/{roomId}/actions", handler.submitGameAction)
 	mux.Handle("GET /ws", handler.realtime)
 
 	return httpx.WithCORS(mux)
@@ -183,7 +184,7 @@ func (h *Handler) startRoom(w http.ResponseWriter, r *http.Request) {
 
 	game := h.games.StartGame(room)
 	h.broadcastRoomUpdated(room)
-	h.broadcastGameUpdated(game)
+	h.broadcastGameUpdated(game.RoomID)
 	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Room{"room": room})
 }
 
@@ -211,7 +212,7 @@ func (h *Handler) getGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": game})
+	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
 }
 
 type setGamePhaseRequest struct {
@@ -253,8 +254,47 @@ func (h *Handler) setGamePhase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.broadcastGameUpdated(game)
-	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": game})
+	h.broadcastGameUpdated(game.RoomID)
+	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
+}
+
+type submitGameActionRequest struct {
+	Type     domain.GameActionType `json:"type"`
+	TargetID string                `json:"targetId"`
+}
+
+func (h *Handler) submitGameAction(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	roomID := r.PathValue("roomId")
+	room, ok := h.rooms.GetRoom(roomID)
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, rooms.ErrRoomNotFound.Error())
+		return
+	}
+
+	if !isRoomParticipant(room, user.ID) {
+		httpx.WriteError(w, http.StatusForbidden, rooms.ErrNotParticipant.Error())
+		return
+	}
+
+	var request submitGameActionRequest
+	if err := httpx.DecodeJSON(r, &request); err != nil {
+		httpx.BadRequest(w, err)
+		return
+	}
+
+	game, err := h.games.SubmitAction(roomID, user.ID, request.Type, request.TargetID)
+	if err != nil {
+		h.writeGameError(w, err)
+		return
+	}
+
+	h.broadcastGameUpdated(game.RoomID)
+	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
 }
 
 func (h *Handler) requireUser(w http.ResponseWriter, r *http.Request) (domain.UserSession, bool) {
@@ -296,10 +336,10 @@ func (h *Handler) broadcastRoomsUpdated() {
 	})
 }
 
-func (h *Handler) broadcastGameUpdated(game domain.Game) {
+func (h *Handler) broadcastGameUpdated(roomID string) {
 	h.realtime.Broadcast(realtime.Event{
-		Type: realtime.EventGameUpdated,
-		Game: &game,
+		Type:   realtime.EventGameUpdated,
+		RoomID: roomID,
 	})
 }
 
@@ -336,6 +376,16 @@ func (h *Handler) writeGameError(w http.ResponseWriter, err error) {
 		httpx.WriteError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, games.ErrInvalidPhase):
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, games.ErrInvalidAction):
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, games.ErrActionUnavailable):
+		httpx.WriteError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, games.ErrPlayerNotFound):
+		httpx.WriteError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, games.ErrPlayerDead):
+		httpx.WriteError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, games.ErrTargetDead):
+		httpx.WriteError(w, http.StatusConflict, err.Error())
 	default:
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 	}
