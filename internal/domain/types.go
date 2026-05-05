@@ -13,7 +13,7 @@ const (
 const (
 	MinPlayersInRoom  = 6
 	MaxPlayersInRoom  = 16
-	MinPlayersToStart = 4
+	MinPlayersToStart = 6
 )
 
 type UserSession struct {
@@ -47,19 +47,41 @@ const (
 	GamePhaseFinal  GamePhase = "final"
 )
 
+type GameStep string
+
+const (
+	GameStepNightMistress     GameStep = "night_mistress"
+	GameStepNightDoctor       GameStep = "night_doctor"
+	GameStepNightCommissioner GameStep = "night_commissioner"
+	GameStepNightMafia        GameStep = "night_mafia"
+	GameStepDaySpeech         GameStep = "day_speech"
+	GameStepDayDiscussion     GameStep = "day_discussion"
+	GameStepVoting            GameStep = "voting"
+	GameStepFinal             GameStep = "final"
+)
+
 type GameRole string
 
 const (
 	GameRoleCivilian     GameRole = "civilian"
 	GameRoleMafia        GameRole = "mafia"
+	GameRoleMistress     GameRole = "mistress"
 	GameRoleCommissioner GameRole = "commissioner"
 	GameRoleDoctor       GameRole = "doctor"
+)
+
+type GameSide string
+
+const (
+	GameSideTown  GameSide = "town"
+	GameSideMafia GameSide = "mafia"
 )
 
 type GameActionType string
 
 const (
 	GameActionMafiaKill GameActionType = "mafia_kill"
+	GameActionBlock     GameActionType = "mistress_block"
 	GameActionInspect   GameActionType = "inspect"
 	GameActionHeal      GameActionType = "heal"
 	GameActionVote      GameActionType = "vote"
@@ -70,6 +92,7 @@ type GamePlayer struct {
 	Nickname string   `json:"nickname"`
 	IsOwner  bool     `json:"isOwner"`
 	Role     GameRole `json:"role,omitempty"`
+	Side     GameSide `json:"side,omitempty"`
 	IsAlive  bool     `json:"isAlive"`
 }
 
@@ -100,10 +123,16 @@ type Game struct {
 	ID                   string       `json:"id"`
 	RoomID               string       `json:"roomId"`
 	Phase                GamePhase    `json:"phase"`
+	Step                 GameStep     `json:"step"`
 	Round                int          `json:"round"`
 	PhaseStartedAt       string       `json:"phaseStartedAt"`
 	PhaseEndsAt          string       `json:"phaseEndsAt"`
 	PhaseDurationSeconds int          `json:"phaseDurationSeconds"`
+	ActiveRole           GameRole     `json:"activeRole,omitempty"`
+	ActivePlayerID       string       `json:"activePlayerId,omitempty"`
+	ActivePlayerNickname string       `json:"activePlayerNickname,omitempty"`
+	FirstSpeakerIndex    int          `json:"firstSpeakerIndex"`
+	SpeechIndex          int          `json:"speechIndex"`
 	Players              []GamePlayer `json:"players"`
 	Actions              []GameAction `json:"actions"`
 	Events               []GameEvent  `json:"events"`

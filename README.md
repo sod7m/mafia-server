@@ -9,15 +9,15 @@ Current state:
 4. HTTP API for lobby/room flow.
 5. WebSocket broadcast for room updates.
 6. In-memory game snapshot created on room start.
-7. Server-side game phase switching for dev gameplay flow.
+7. Server-side game step switching for night roles, day speeches, discussion and voting.
 8. Owner-only room start and owner-only phase controls.
 9. Server-side dev game actions for night moves and voting.
 10. Per-player private game snapshots for roles, private actions and inspect results.
-11. Server phase timer with fixed phase order and automatic phase advancement.
+11. Server step timer with fixed order and automatic step advancement.
 
 Not implemented yet:
 1. PostgreSQL persistence.
-2. Full production-grade server-authoritative game engine.
+2. PostgreSQL-backed production persistence for the server-authoritative game engine.
 3. LiveKit voice/video token endpoint.
 
 ## Requirements
@@ -115,7 +115,7 @@ curl -X POST http://localhost:8080/api/rooms \
 - `POST /api/rooms/{roomId}/leave`
 - `POST /api/rooms/{roomId}/start` owner only
 
-Starting a room requires at least 4 players in the current dev rules.
+Starting a room requires at least 6 players.
 
 ### Games
 
@@ -127,14 +127,15 @@ Starting a room requires at least 4 players in the current dev rules.
 `GET /api/games/{roomId}` returns a private view for the authenticated player:
 
 - every player sees their own role
-- mafia players see mafia teammates
-- commissioner sees roles they have inspected
+- mafia players see ordinary mafia teammates, but not the mistress
+- commissioner sees inspected player side only: town or mafia
 - other roles stay hidden until `final`
 - private night actions and commissioner inspect results are not shown to unrelated players
 
 Current game snapshot starts with:
 
 - `phase: night`
+- `step: night_mistress`
 - `round: 1`
 - `phaseStartedAt`
 - `phaseEndsAt`
@@ -144,7 +145,8 @@ Current game snapshot starts with:
   - commissioner
   - mafia
   - doctor
-  - civilians, with a second mafia at seat 6
+  - mistress
+  - civilians, with a second ordinary mafia at seat 7
 
 Change phase:
 
@@ -164,16 +166,22 @@ Allowed phases:
 
 Switching from a non-night phase back to `night` increments the game round.
 
-Preferred phase flow:
+Preferred step flow:
 
-- `night -> day -> voting -> night`
-- `POST /api/games/{roomId}/next-phase` follows this order.
-- The backend also advances expired phases automatically.
+- `night_mistress -> night_doctor -> night_commissioner -> night_mafia`
+- `day_speech` once per alive player, rotating first speaker by round
+- `day_discussion -> voting -> night_mistress`
+- `POST /api/games/{roomId}/next-phase` advances the current step.
+- The backend also advances expired steps automatically.
 
-Default dev phase durations:
+Default step durations:
 
-- `night`: 45 seconds
-- `day`: 90 seconds
+- `night_mistress`: 15 seconds
+- `night_doctor`: 15 seconds
+- `night_commissioner`: 15 seconds
+- `night_mafia`: 30 seconds
+- `day_speech`: 60 seconds per alive speaker
+- `day_discussion`: 90 seconds
 - `voting`: 35 seconds
 - `final`: no timer
 
@@ -189,18 +197,20 @@ curl -X POST http://localhost:8080/api/games/<ROOM_ID>/actions \
 Allowed action flow:
 
 - `night`:
+  - `mistress_block` by mistress during `night_mistress`
+  - `heal` by doctor during `night_doctor`
+  - `inspect` by commissioner during `night_commissioner`
   - `mafia_kill` by mafia
-  - `inspect` by commissioner
-  - `heal` by doctor
 - `voting`:
   - `vote` by alive players
 
 Phase resolution:
 
-- Leaving `night` resolves mafia kill, doctor heal and commissioner inspect events.
+- Leaving `night` resolves mistress block, doctor heal and mafia shots.
 - Leaving `voting` resolves exile by vote majority.
-- If all mafia are dead, the game moves to `final`.
-- If mafia count is at least the alive town count, the game moves to `final`.
+- Mafia kill succeeds only when at least two alive unblocked ordinary mafia choose the same target.
+- If all mafia-side players are dead, the game moves to `final`.
+- If mafia-side count is at least the alive town count, the game moves to `final`.
 
 Current dev limitation: WebSocket `game.updated` is a room-level signal, not a personalized payload. Clients refresh `GET /api/games/{roomId}` after the signal to receive their private view.
 

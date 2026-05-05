@@ -29,20 +29,44 @@ var validPhases = []domain.GamePhase{
 	domain.GamePhaseFinal,
 }
 
-var phaseDurations = map[domain.GamePhase]time.Duration{
-	domain.GamePhaseNight:  45 * time.Second,
-	domain.GamePhaseDay:    90 * time.Second,
-	domain.GamePhaseVoting: 35 * time.Second,
-	domain.GamePhaseFinal:  0,
+var stepDurations = map[domain.GameStep]time.Duration{
+	domain.GameStepNightMistress:     15 * time.Second,
+	domain.GameStepNightDoctor:       15 * time.Second,
+	domain.GameStepNightCommissioner: 15 * time.Second,
+	domain.GameStepNightMafia:        30 * time.Second,
+	domain.GameStepDaySpeech:         60 * time.Second,
+	domain.GameStepDayDiscussion:     90 * time.Second,
+	domain.GameStepVoting:            35 * time.Second,
+	domain.GameStepFinal:             0,
+}
+
+type nightStep struct {
+	step domain.GameStep
+	role domain.GameRole
+}
+
+var nightSteps = []nightStep{
+	{step: domain.GameStepNightMistress, role: domain.GameRoleMistress},
+	{step: domain.GameStepNightDoctor, role: domain.GameRoleDoctor},
+	{step: domain.GameStepNightCommissioner, role: domain.GameRoleCommissioner},
+	{step: domain.GameStepNightMafia, role: domain.GameRoleMafia},
 }
 
 var rolePattern = []domain.GameRole{
 	domain.GameRoleCommissioner,
 	domain.GameRoleMafia,
 	domain.GameRoleDoctor,
+	domain.GameRoleMistress,
 	domain.GameRoleCivilian,
 	domain.GameRoleCivilian,
 	domain.GameRoleMafia,
+	domain.GameRoleCivilian,
+	domain.GameRoleCivilian,
+	domain.GameRoleMafia,
+	domain.GameRoleCivilian,
+	domain.GameRoleCivilian,
+	domain.GameRoleMafia,
+	domain.GameRoleCivilian,
 	domain.GameRoleCivilian,
 	domain.GameRoleCivilian,
 }
@@ -64,7 +88,7 @@ func (s *Service) StartGame(room domain.Room) domain.Game {
 
 	if game, ok := s.byRoom[room.ID]; ok {
 		game.Players = playersFromRoom(room)
-		game.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		game.UpdatedAt = formatTime(time.Now().UTC())
 		s.byRoom[room.ID] = game
 		return cloneGame(game)
 	}
@@ -73,11 +97,10 @@ func (s *Service) StartGame(room domain.Room) domain.Game {
 	game := domain.Game{
 		ID:      ids.NewID("game"),
 		RoomID:  room.ID,
-		Phase:   domain.GamePhaseNight,
 		Round:   1,
 		Players: playersFromRoom(room),
 	}
-	setPhaseWindow(&game, domain.GamePhaseNight, now)
+	startNight(&game, now, false)
 	game.StartedAt = formatTime(now)
 	game.UpdatedAt = formatTime(now)
 
@@ -106,17 +129,21 @@ func ViewForPlayer(game domain.Game, viewerID string) domain.Game {
 	revealAll := game.Phase == domain.GamePhaseFinal
 	inspectedTargets := inspectedTargetsBy(game.Actions, viewerID)
 	for index := range view.Players {
-		player := view.Players[index]
-		if revealAll ||
-			player.ID == viewerID ||
-			(viewer.Role == domain.GameRoleMafia && player.Role == domain.GameRoleMafia) {
-			continue
+		player := game.Players[index]
+		switch {
+		case revealAll:
+			view.Players[index].Side = sideForRole(player.Role)
+		case player.ID == viewerID:
+			view.Players[index].Side = sideForRole(player.Role)
+		case viewer.Role == domain.GameRoleMafia && player.Role == domain.GameRoleMafia:
+			view.Players[index].Side = domain.GameSideMafia
+		default:
+			view.Players[index].Role = ""
+			view.Players[index].Side = ""
+			if _, inspected := inspectedTargets[player.ID]; inspected {
+				view.Players[index].Side = sideForRole(player.Role)
+			}
 		}
-		if _, inspected := inspectedTargets[player.ID]; inspected {
-			continue
-		}
-
-		view.Players[index].Role = ""
 	}
 
 	view.Actions = visibleActions(game.Actions, viewer, revealAll)
@@ -151,7 +178,7 @@ func (s *Service) AdvancePhase(roomID string) (domain.Game, error) {
 		return domain.Game{}, ErrGameNotFound
 	}
 
-	advancePhase(&game, time.Now().UTC(), "manual")
+	advanceStep(&game, time.Now().UTC(), "manual")
 	s.byRoom[roomID] = game
 	return cloneGame(game), nil
 }
@@ -171,7 +198,7 @@ func (s *Service) AdvanceExpired(now time.Time) []domain.Game {
 			continue
 		}
 
-		advancePhase(&game, now.UTC(), "timer")
+		advanceStep(&game, now.UTC(), "timer")
 		s.byRoom[roomID] = game
 		advanced = append(advanced, cloneGame(game))
 	}
@@ -210,7 +237,13 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 	if isPhaseExpired(game, now) {
 		return domain.Game{}, ErrActionUnavailable
 	}
-	if err := validateAction(game.Phase, actor.Role, actionType, actor.ID == target.ID); err != nil {
+	if actionType != domain.GameActionBlock && isBlockedThisRound(game, actor.ID) {
+		return domain.Game{}, ErrActionUnavailable
+	}
+	if err := validateAction(game, actor, target, actionType); err != nil {
+		return domain.Game{}, err
+	}
+	if err := validateTargetHistory(game, actor.ID, actionType, target.ID); err != nil {
 		return domain.Game{}, err
 	}
 
@@ -257,36 +290,72 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 
 func transitionToPhase(game *domain.Game, phase domain.GamePhase, now time.Time) {
 	if phase != game.Phase {
-		resolvePhase(game)
-	}
-	if phase == domain.GamePhaseNight && game.Phase != domain.GamePhaseNight {
-		game.Round++
+		resolveBeforeLeavingPhase(game)
 	}
 
-	setPhaseWindow(game, phase, now)
-	if game.Phase != domain.GamePhaseFinal {
-		maybeFinishGame(game)
-		if game.Phase == domain.GamePhaseFinal {
-			setPhaseWindow(game, domain.GamePhaseFinal, now)
-		}
+	if maybeFinishGame(game) {
+		setFinal(game, now)
+		return
+	}
+
+	switch phase {
+	case domain.GamePhaseNight:
+		startNight(game, now, game.Phase != domain.GamePhaseNight)
+	case domain.GamePhaseDay:
+		startDaySpeeches(game, now)
+	case domain.GamePhaseVoting:
+		setStepWindow(game, domain.GameStepVoting, now)
+	case domain.GamePhaseFinal:
+		setFinal(game, now)
 	}
 	game.UpdatedAt = formatTime(now)
 }
 
-func advancePhase(game *domain.Game, now time.Time, reason string) {
+func advanceStep(game *domain.Game, now time.Time, reason string) {
 	if game.Phase == domain.GamePhaseFinal {
 		return
 	}
 
-	nextPhase := nextPhase(game.Phase)
-	transitionToPhase(game, nextPhase, now)
-	if game.Phase == domain.GamePhaseFinal {
+	advanced := false
+	switch game.Step {
+	case domain.GameStepNightMistress, domain.GameStepNightDoctor, domain.GameStepNightCommissioner:
+		advanceNightRoleStep(game, now)
+		advanced = true
+	case domain.GameStepNightMafia:
+		resolveNight(game)
+		if maybeFinishGame(game) {
+			setFinal(game, now)
+		} else {
+			startDaySpeeches(game, now)
+		}
+		advanced = true
+	case domain.GameStepDaySpeech:
+		advanceDaySpeech(game, now)
+		advanced = true
+	case domain.GameStepDayDiscussion:
+		setStepWindow(game, domain.GameStepVoting, now)
+		advanced = true
+	case domain.GameStepVoting:
+		resolveVoting(game)
+		if maybeFinishGame(game) {
+			setFinal(game, now)
+		} else {
+			startNight(game, now, true)
+		}
+		advanced = true
+	default:
+		transitionToPhase(game, nextPhase(game.Phase), now)
+		advanced = true
+	}
+
+	if !advanced || game.Phase == domain.GamePhaseFinal {
+		game.UpdatedAt = formatTime(now)
 		return
 	}
 
 	message := "Фаза змінена."
 	if reason == "timer" {
-		message = "Час фази завершився. Сервер перейшов до наступної фази."
+		message = "Час підфази завершився. Сервер перейшов далі."
 	}
 	game.Events = append(game.Events, newGameEvent("phase.advanced", message, game.Phase, game.Round, "", ""))
 	game.UpdatedAt = formatTime(now)
@@ -305,17 +374,149 @@ func nextPhase(phase domain.GamePhase) domain.GamePhase {
 	}
 }
 
-func setPhaseWindow(game *domain.Game, phase domain.GamePhase, now time.Time) {
-	duration := phaseDurations[phase]
-	game.Phase = phase
+func startNight(game *domain.Game, now time.Time, incrementRound bool) {
+	if incrementRound {
+		game.Round++
+	}
+	game.FirstSpeakerIndex = 0
+	game.SpeechIndex = 0
+	setNextNightStep(game, 0, now)
+}
+
+func advanceNightRoleStep(game *domain.Game, now time.Time) {
+	currentIndex := 0
+	for index, step := range nightSteps {
+		if step.step == game.Step {
+			currentIndex = index + 1
+			break
+		}
+	}
+	setNextNightStep(game, currentIndex, now)
+}
+
+func setNextNightStep(game *domain.Game, startIndex int, now time.Time) {
+	for index := startIndex; index < len(nightSteps); index++ {
+		if hasAliveRole(game.Players, nightSteps[index].role) {
+			setStepWindow(game, nightSteps[index].step, now)
+			return
+		}
+	}
+
+	resolveNight(game)
+	if maybeFinishGame(game) {
+		setFinal(game, now)
+		return
+	}
+	startDaySpeeches(game, now)
+}
+
+func startDaySpeeches(game *domain.Game, now time.Time) {
+	game.FirstSpeakerIndex = 0
+	if len(game.Players) > 0 {
+		game.FirstSpeakerIndex = (game.Round - 1) % len(game.Players)
+	}
+	game.SpeechIndex = 0
+	if len(speechOrder(*game)) == 0 {
+		setStepWindow(game, domain.GameStepDayDiscussion, now)
+		return
+	}
+	setStepWindow(game, domain.GameStepDaySpeech, now)
+}
+
+func advanceDaySpeech(game *domain.Game, now time.Time) {
+	game.SpeechIndex++
+	if game.SpeechIndex >= len(speechOrder(*game)) {
+		setStepWindow(game, domain.GameStepDayDiscussion, now)
+		return
+	}
+	setStepWindow(game, domain.GameStepDaySpeech, now)
+}
+
+func setFinal(game *domain.Game, now time.Time) {
+	setStepWindow(game, domain.GameStepFinal, now)
+}
+
+func setStepWindow(game *domain.Game, step domain.GameStep, now time.Time) {
+	duration := stepDurations[step]
+	game.Step = step
+	game.Phase = phaseForStep(step)
+	game.ActiveRole = ""
+	game.ActivePlayerID = ""
+	game.ActivePlayerNickname = ""
+
+	switch step {
+	case domain.GameStepNightMistress:
+		setActiveRole(game, domain.GameRoleMistress)
+	case domain.GameStepNightDoctor:
+		setActiveRole(game, domain.GameRoleDoctor)
+	case domain.GameStepNightCommissioner:
+		setActiveRole(game, domain.GameRoleCommissioner)
+	case domain.GameStepNightMafia:
+		game.ActiveRole = domain.GameRoleMafia
+	case domain.GameStepDaySpeech:
+		order := speechOrder(*game)
+		if game.SpeechIndex < len(order) {
+			game.ActivePlayerID = order[game.SpeechIndex].ID
+			game.ActivePlayerNickname = order[game.SpeechIndex].Nickname
+		}
+	}
+
 	game.PhaseStartedAt = formatTime(now)
 	game.PhaseDurationSeconds = int(duration.Seconds())
 	if duration <= 0 {
 		game.PhaseEndsAt = ""
 		return
 	}
-
 	game.PhaseEndsAt = formatTime(now.Add(duration))
+}
+
+func phaseForStep(step domain.GameStep) domain.GamePhase {
+	switch step {
+	case domain.GameStepNightMistress, domain.GameStepNightDoctor, domain.GameStepNightCommissioner, domain.GameStepNightMafia:
+		return domain.GamePhaseNight
+	case domain.GameStepDaySpeech, domain.GameStepDayDiscussion:
+		return domain.GamePhaseDay
+	case domain.GameStepVoting:
+		return domain.GamePhaseVoting
+	default:
+		return domain.GamePhaseFinal
+	}
+}
+
+func setActiveRole(game *domain.Game, role domain.GameRole) {
+	game.ActiveRole = role
+	for _, player := range game.Players {
+		if player.Role == role && player.IsAlive {
+			game.ActivePlayerID = player.ID
+			game.ActivePlayerNickname = player.Nickname
+			return
+		}
+	}
+}
+
+func speechOrder(game domain.Game) []domain.GamePlayer {
+	if len(game.Players) == 0 {
+		return nil
+	}
+
+	players := make([]domain.GamePlayer, 0, len(game.Players))
+	start := game.FirstSpeakerIndex % len(game.Players)
+	for offset := 0; offset < len(game.Players); offset++ {
+		player := game.Players[(start+offset)%len(game.Players)]
+		if player.IsAlive {
+			players = append(players, player)
+		}
+	}
+	return players
+}
+
+func resolveBeforeLeavingPhase(game *domain.Game) {
+	switch game.Phase {
+	case domain.GamePhaseNight:
+		resolveNight(game)
+	case domain.GamePhaseVoting:
+		resolveVoting(game)
+	}
 }
 
 func isPhaseExpired(game domain.Game, now time.Time) bool {
@@ -334,11 +535,13 @@ func formatTime(value time.Time) string {
 func playersFromRoom(room domain.Room) []domain.GamePlayer {
 	players := make([]domain.GamePlayer, 0, len(room.Players))
 	for index, player := range room.Players {
+		role := roleForIndex(index)
 		players = append(players, domain.GamePlayer{
 			ID:       player.ID,
 			Nickname: player.Nickname,
 			IsOwner:  player.IsOwner,
-			Role:     roleForIndex(index),
+			Role:     role,
+			Side:     sideForRole(role),
 			IsAlive:  true,
 		})
 	}
@@ -371,22 +574,46 @@ func playerIndex(players []domain.GamePlayer, playerID string) int {
 	return -1
 }
 
-func validateAction(phase domain.GamePhase, role domain.GameRole, actionType domain.GameActionType, isSelfTarget bool) error {
-	switch actionType {
-	case domain.GameActionMafiaKill:
-		if phase != domain.GamePhaseNight || role != domain.GameRoleMafia || isSelfTarget {
-			return ErrActionUnavailable
+func playerByID(players []domain.GamePlayer, playerID string) (domain.GamePlayer, bool) {
+	for _, player := range players {
+		if player.ID == playerID {
+			return player, true
 		}
-	case domain.GameActionInspect:
-		if phase != domain.GamePhaseNight || role != domain.GameRoleCommissioner || isSelfTarget {
+	}
+
+	return domain.GamePlayer{}, false
+}
+
+func hasAliveRole(players []domain.GamePlayer, role domain.GameRole) bool {
+	for _, player := range players {
+		if player.Role == role && player.IsAlive {
+			return true
+		}
+	}
+	return false
+}
+
+func validateAction(game domain.Game, actor domain.GamePlayer, target domain.GamePlayer, actionType domain.GameActionType) error {
+	isSelfTarget := actor.ID == target.ID
+	switch actionType {
+	case domain.GameActionBlock:
+		if game.Step != domain.GameStepNightMistress || actor.Role != domain.GameRoleMistress || isSelfTarget {
 			return ErrActionUnavailable
 		}
 	case domain.GameActionHeal:
-		if phase != domain.GamePhaseNight || role != domain.GameRoleDoctor {
+		if game.Step != domain.GameStepNightDoctor || actor.Role != domain.GameRoleDoctor {
+			return ErrActionUnavailable
+		}
+	case domain.GameActionInspect:
+		if game.Step != domain.GameStepNightCommissioner || actor.Role != domain.GameRoleCommissioner || isSelfTarget {
+			return ErrActionUnavailable
+		}
+	case domain.GameActionMafiaKill:
+		if game.Step != domain.GameStepNightMafia || actor.Role != domain.GameRoleMafia || isSelfTarget {
 			return ErrActionUnavailable
 		}
 	case domain.GameActionVote:
-		if phase != domain.GamePhaseVoting || isSelfTarget {
+		if game.Step != domain.GameStepVoting || isSelfTarget {
 			return ErrActionUnavailable
 		}
 	default:
@@ -394,6 +621,42 @@ func validateAction(phase domain.GamePhase, role domain.GameRole, actionType dom
 	}
 
 	return nil
+}
+
+func validateTargetHistory(game domain.Game, actorID string, actionType domain.GameActionType, targetID string) error {
+	switch actionType {
+	case domain.GameActionBlock, domain.GameActionHeal:
+		if previousRoundTarget(game.Actions, actorID, actionType, game.Round) == targetID {
+			return ErrActionUnavailable
+		}
+	case domain.GameActionInspect:
+		if hasPriorInspectTarget(game.Actions, actorID, targetID, game.Round) {
+			return ErrActionUnavailable
+		}
+	}
+
+	return nil
+}
+
+func previousRoundTarget(actions []domain.GameAction, actorID string, actionType domain.GameActionType, round int) string {
+	for _, action := range actions {
+		if action.ActorID == actorID && action.Type == actionType && action.Round == round-1 {
+			return action.TargetID
+		}
+	}
+	return ""
+}
+
+func hasPriorInspectTarget(actions []domain.GameAction, actorID string, targetID string, currentRound int) bool {
+	for _, action := range actions {
+		if action.ActorID == actorID &&
+			action.Type == domain.GameActionInspect &&
+			action.TargetID == targetID &&
+			action.Round != currentRound {
+			return true
+		}
+	}
+	return false
 }
 
 func upsertAction(actions []domain.GameAction, action domain.GameAction) []domain.GameAction {
@@ -412,6 +675,8 @@ func upsertAction(actions []domain.GameAction, action domain.GameAction) []domai
 
 func actionRecordedMessage(actionType domain.GameActionType, actorNickname string, targetNickname string) string {
 	switch actionType {
+	case domain.GameActionBlock:
+		return fmt.Sprintf("%s заблокувала нічний хід %s.", actorNickname, targetNickname)
 	case domain.GameActionMafiaKill:
 		return fmt.Sprintf("%s вибрав ціль для нічного удару.", actorNickname)
 	case domain.GameActionInspect:
@@ -425,27 +690,18 @@ func actionRecordedMessage(actionType domain.GameActionType, actorNickname strin
 	}
 }
 
-func resolvePhase(game *domain.Game) {
-	switch game.Phase {
-	case domain.GamePhaseNight:
-		resolveNight(game)
-	case domain.GamePhaseVoting:
-		resolveVoting(game)
-	}
-}
-
 func resolveNight(game *domain.Game) {
 	actions := actionsForCurrentPhase(*game)
 	healedTargets := make(map[string]struct{})
 	for _, action := range actions {
-		if action.Type == domain.GameActionHeal {
+		if action.Type == domain.GameActionHeal && !isBlockedThisRound(*game, action.ActorID) {
 			healedTargets[action.TargetID] = struct{}{}
 		}
 	}
 
-	targetID, ok := topTarget(actions, domain.GameActionMafiaKill)
+	targetID, ok := mafiaTarget(*game)
 	if !ok {
-		game.Events = append(game.Events, newGameEvent("night.resolved", "Ніч минула без атаки мафії.", game.Phase, game.Round, "", ""))
+		game.Events = append(game.Events, newGameEvent("night.miss.resolved", "Мафія промахнулась. Цієї ночі нікого не вбито.", game.Phase, game.Round, "", ""))
 		return
 	}
 
@@ -456,7 +712,7 @@ func resolveNight(game *domain.Game) {
 	if _, healed := healedTargets[targetID]; healed {
 		game.Events = append(game.Events, newGameEvent(
 			"night.heal.resolved",
-			"Цієї ночі нікого не вбито.",
+			"Лікар врятував ціль. Цієї ночі нікого не вбито.",
 			game.Phase,
 			game.Round,
 			"",
@@ -474,6 +730,50 @@ func resolveNight(game *domain.Game) {
 		"",
 		target.ID,
 	))
+}
+
+func mafiaTarget(game domain.Game) (string, bool) {
+	unblockedMafia := make(map[string]struct{})
+	for _, player := range game.Players {
+		if player.Role == domain.GameRoleMafia && player.IsAlive && !isBlockedThisRound(game, player.ID) {
+			unblockedMafia[player.ID] = struct{}{}
+		}
+	}
+	if len(unblockedMafia) < 2 {
+		return "", false
+	}
+
+	actorTargets := make(map[string]string)
+	for _, action := range actionsForCurrentPhase(game) {
+		if action.Type != domain.GameActionMafiaKill {
+			continue
+		}
+		if _, ok := unblockedMafia[action.ActorID]; !ok {
+			continue
+		}
+		target, ok := playerByID(game.Players, action.TargetID)
+		if !ok || !target.IsAlive {
+			continue
+		}
+		actorTargets[action.ActorID] = action.TargetID
+	}
+
+	if len(actorTargets) != len(unblockedMafia) {
+		return "", false
+	}
+
+	var targetID string
+	for _, currentTargetID := range actorTargets {
+		if targetID == "" {
+			targetID = currentTargetID
+			continue
+		}
+		if targetID != currentTargetID {
+			return "", false
+		}
+	}
+
+	return targetID, targetID != ""
 }
 
 func resolveVoting(game *domain.Game) {
@@ -509,6 +809,20 @@ func actionsForCurrentPhase(game domain.Game) []domain.GameAction {
 	}
 
 	return actions
+}
+
+func isBlockedThisRound(game domain.Game, playerID string) bool {
+	for _, action := range game.Actions {
+		if action.Type == domain.GameActionBlock &&
+			action.Round == game.Round &&
+			action.TargetID == playerID {
+			actor, ok := playerByID(game.Players, action.ActorID)
+			if ok && actor.Role == domain.GameRoleMistress && actor.IsAlive {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func topTarget(actions []domain.GameAction, actionType domain.GameActionType) (string, bool) {
@@ -556,46 +870,29 @@ func topTarget(actions []domain.GameAction, actionType domain.GameActionType) (s
 	return ranked[0].targetID, true
 }
 
-func maybeFinishGame(game *domain.Game) {
+func maybeFinishGame(game *domain.Game) bool {
 	mafiaAlive := 0
-	mafiaTotal := 0
 	townAlive := 0
 	for _, player := range game.Players {
-		if player.Role == domain.GameRoleMafia {
-			mafiaTotal++
-		}
 		if !player.IsAlive {
 			continue
 		}
-		if player.Role == domain.GameRoleMafia {
+		if sideForRole(player.Role) == domain.GameSideMafia {
 			mafiaAlive++
 		} else {
 			townAlive++
 		}
 	}
 
-	if mafiaTotal == 0 {
-		return
-	}
 	if mafiaAlive == 0 {
-		game.Phase = domain.GamePhaseFinal
-		game.Events = append(game.Events, newGameEvent("game.finished", "Мирні перемогли. Уся мафія вибула.", game.Phase, game.Round, "", ""))
-		return
+		game.Events = append(game.Events, newGameEvent("game.finished", "Мирні перемогли. Уся мафія вибула.", domain.GamePhaseFinal, game.Round, "", ""))
+		return true
 	}
 	if mafiaAlive >= townAlive {
-		game.Phase = domain.GamePhaseFinal
-		game.Events = append(game.Events, newGameEvent("game.finished", "Мафія перемогла. Її вже не можна переголосувати.", game.Phase, game.Round, "", ""))
+		game.Events = append(game.Events, newGameEvent("game.finished", "Мафія перемогла. Її вже не можна переголосувати.", domain.GamePhaseFinal, game.Round, "", ""))
+		return true
 	}
-}
-
-func playerByID(players []domain.GamePlayer, playerID string) (domain.GamePlayer, bool) {
-	for _, player := range players {
-		if player.ID == playerID {
-			return player, true
-		}
-	}
-
-	return domain.GamePlayer{}, false
+	return false
 }
 
 func setPlayerAlive(players []domain.GamePlayer, playerID string, isAlive bool) {
@@ -621,11 +918,18 @@ func newGameEvent(eventType string, message string, phase domain.GamePhase, roun
 }
 
 func inspectLabel(role domain.GameRole) string {
-	if role == domain.GameRoleMafia {
+	if sideForRole(role) == domain.GameSideMafia {
 		return "Мафія"
 	}
 
 	return "Мирний"
+}
+
+func sideForRole(role domain.GameRole) domain.GameSide {
+	if role == domain.GameRoleMafia || role == domain.GameRoleMistress {
+		return domain.GameSideMafia
+	}
+	return domain.GameSideTown
 }
 
 func inspectedTargetsBy(actions []domain.GameAction, actorID string) map[string]struct{} {

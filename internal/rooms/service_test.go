@@ -97,6 +97,8 @@ func TestStartRoomMovesToInProgress(t *testing.T) {
 		{ID: "user-2", Nickname: "Joiner2"},
 		{ID: "user-3", Nickname: "Joiner3"},
 		{ID: "user-4", Nickname: "Joiner4"},
+		{ID: "user-5", Nickname: "Joiner5"},
+		{ID: "user-6", Nickname: "Joiner6"},
 	} {
 		if _, err := service.JoinRoom(joiner, room.ID); err != nil {
 			t.Fatalf("JoinRoom returned error: %v", err)
@@ -156,6 +158,8 @@ func TestStartRoomRejectsAlreadyStartedRoom(t *testing.T) {
 		{ID: "user-2", Nickname: "Joiner2"},
 		{ID: "user-3", Nickname: "Joiner3"},
 		{ID: "user-4", Nickname: "Joiner4"},
+		{ID: "user-5", Nickname: "Joiner5"},
+		{ID: "user-6", Nickname: "Joiner6"},
 	} {
 		if _, err := service.JoinRoom(joiner, room.ID); err != nil {
 			t.Fatalf("JoinRoom returned error: %v", err)

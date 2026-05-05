@@ -7,16 +7,9 @@ import (
 	"mafia-server/internal/domain"
 )
 
-func TestStartGameCreatesNightRoundOneSnapshot(t *testing.T) {
+func TestStartGameCreatesNightMistressStep(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Owner", IsOwner: true},
-			{ID: "user-2", Nickname: "Joiner", IsOwner: false},
-		},
-	}
+	room := testRoom(7)
 
 	game := service.StartGame(room)
 
@@ -29,41 +22,32 @@ func TestStartGameCreatesNightRoundOneSnapshot(t *testing.T) {
 	if game.Phase != domain.GamePhaseNight {
 		t.Fatalf("expected night phase, got %q", game.Phase)
 	}
+	if game.Step != domain.GameStepNightMistress {
+		t.Fatalf("expected mistress step, got %q", game.Step)
+	}
 	if game.Round != 1 {
 		t.Fatalf("expected round 1, got %d", game.Round)
 	}
-	if game.PhaseStartedAt == "" {
-		t.Fatal("expected phase start timestamp")
+	if game.PhaseDurationSeconds != 15 {
+		t.Fatalf("expected mistress duration 15, got %d", game.PhaseDurationSeconds)
 	}
-	if game.PhaseEndsAt == "" {
-		t.Fatal("expected phase end timestamp")
+	if findPlayer(t, game, "user-1").Role != domain.GameRoleCommissioner {
+		t.Fatalf("expected first player commissioner role, got %q", findPlayer(t, game, "user-1").Role)
 	}
-	if game.PhaseDurationSeconds != 45 {
-		t.Fatalf("expected night duration 45, got %d", game.PhaseDurationSeconds)
+	if findPlayer(t, game, "user-2").Role != domain.GameRoleMafia {
+		t.Fatalf("expected second player mafia role, got %q", findPlayer(t, game, "user-2").Role)
 	}
-	if len(game.Players) != 2 {
-		t.Fatalf("expected 2 players, got %d", len(game.Players))
+	if findPlayer(t, game, "user-3").Role != domain.GameRoleDoctor {
+		t.Fatalf("expected third player doctor role, got %q", findPlayer(t, game, "user-3").Role)
 	}
-	if !game.Players[0].IsAlive {
-		t.Fatal("expected players to start alive")
-	}
-	if game.Players[0].Role != domain.GameRoleCommissioner {
-		t.Fatalf("expected first player commissioner role, got %q", game.Players[0].Role)
-	}
-	if game.Players[1].Role != domain.GameRoleMafia {
-		t.Fatalf("expected second player mafia role, got %q", game.Players[1].Role)
+	if findPlayer(t, game, "user-4").Role != domain.GameRoleMistress {
+		t.Fatalf("expected fourth player mistress role, got %q", findPlayer(t, game, "user-4").Role)
 	}
 }
 
 func TestStartGameIsIdempotentPerRoom(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Owner", IsOwner: true},
-		},
-	}
+	room := testRoom(7)
 
 	first := service.StartGame(room)
 	second := service.StartGame(room)
@@ -73,98 +57,56 @@ func TestStartGameIsIdempotentPerRoom(t *testing.T) {
 	}
 }
 
-func TestSetPhaseUpdatesPhaseAndRound(t *testing.T) {
+func TestAdvancePhaseFollowsNightAndDaySteps(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Owner", IsOwner: true},
-		},
-	}
-
-	game := service.StartGame(room)
-	if game.Round != 1 {
-		t.Fatalf("expected initial round 1, got %d", game.Round)
-	}
-
-	game, err := service.SetPhase(room.ID, domain.GamePhaseDay)
-	if err != nil {
-		t.Fatalf("SetPhase day returned error: %v", err)
-	}
-	if game.Phase != domain.GamePhaseDay {
-		t.Fatalf("expected day phase, got %q", game.Phase)
-	}
-	if game.Round != 1 {
-		t.Fatalf("expected day to keep round 1, got %d", game.Round)
-	}
-
-	game, err = service.SetPhase(room.ID, domain.GamePhaseNight)
-	if err != nil {
-		t.Fatalf("SetPhase night returned error: %v", err)
-	}
-	if game.Round != 2 {
-		t.Fatalf("expected next night to increment round to 2, got %d", game.Round)
-	}
-}
-
-func TestAdvancePhaseFollowsFixedOrder(t *testing.T) {
-	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Owner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
-		},
-	}
+	room := testRoom(7)
 	service.StartGame(room)
 
 	game, err := service.AdvancePhase(room.ID)
 	if err != nil {
-		t.Fatalf("AdvancePhase day returned error: %v", err)
+		t.Fatalf("AdvancePhase doctor returned error: %v", err)
 	}
-	if game.Phase != domain.GamePhaseDay {
-		t.Fatalf("expected day phase, got %q", game.Phase)
-	}
-	if game.PhaseDurationSeconds != 90 {
-		t.Fatalf("expected day duration 90, got %d", game.PhaseDurationSeconds)
+	if game.Step != domain.GameStepNightDoctor {
+		t.Fatalf("expected doctor step, got %q", game.Step)
 	}
 
 	game, err = service.AdvancePhase(room.ID)
 	if err != nil {
-		t.Fatalf("AdvancePhase voting returned error: %v", err)
+		t.Fatalf("AdvancePhase commissioner returned error: %v", err)
 	}
-	if game.Phase != domain.GamePhaseVoting {
-		t.Fatalf("expected voting phase, got %q", game.Phase)
+	if game.Step != domain.GameStepNightCommissioner {
+		t.Fatalf("expected commissioner step, got %q", game.Step)
 	}
 
 	game, err = service.AdvancePhase(room.ID)
 	if err != nil {
-		t.Fatalf("AdvancePhase night returned error: %v", err)
+		t.Fatalf("AdvancePhase mafia returned error: %v", err)
 	}
-	if game.Phase != domain.GamePhaseNight {
-		t.Fatalf("expected night phase, got %q", game.Phase)
+	if game.Step != domain.GameStepNightMafia {
+		t.Fatalf("expected mafia step, got %q", game.Step)
 	}
-	if game.Round != 2 {
-		t.Fatalf("expected round 2, got %d", game.Round)
+	if game.PhaseDurationSeconds != 30 {
+		t.Fatalf("expected mafia duration 30, got %d", game.PhaseDurationSeconds)
+	}
+
+	game, err = service.AdvancePhase(room.ID)
+	if err != nil {
+		t.Fatalf("AdvancePhase day speech returned error: %v", err)
+	}
+	if game.Phase != domain.GamePhaseDay || game.Step != domain.GameStepDaySpeech {
+		t.Fatalf("expected day speech, got phase %q step %q", game.Phase, game.Step)
+	}
+	if game.ActivePlayerID != "user-1" {
+		t.Fatalf("expected first speaker user-1, got %q", game.ActivePlayerID)
+	}
+	if game.PhaseDurationSeconds != 60 {
+		t.Fatalf("expected speech duration 60, got %d", game.PhaseDurationSeconds)
 	}
 }
 
-func TestAdvanceExpiredAdvancesTimedOutGame(t *testing.T) {
+func TestAdvanceExpiredAdvancesTimedOutSubStep(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Owner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
-		},
-	}
+	room := testRoom(7)
 	started := service.StartGame(room)
 	phaseEndsAt, err := time.Parse(time.RFC3339Nano, started.PhaseEndsAt)
 	if err != nil {
@@ -175,14 +117,14 @@ func TestAdvanceExpiredAdvancesTimedOutGame(t *testing.T) {
 	if len(advanced) != 1 {
 		t.Fatalf("expected 1 advanced game, got %d", len(advanced))
 	}
-	if advanced[0].Phase != domain.GamePhaseDay {
-		t.Fatalf("expected day phase, got %q", advanced[0].Phase)
+	if advanced[0].Step != domain.GameStepNightDoctor {
+		t.Fatalf("expected doctor step, got %q", advanced[0].Step)
 	}
 }
 
 func TestSetPhaseRejectsInvalidPhase(t *testing.T) {
 	service := NewService()
-	room := domain.Room{ID: "room-1"}
+	room := testRoom(7)
 	service.StartGame(room)
 
 	if _, err := service.SetPhase(room.ID, domain.GamePhase("bad")); err != ErrInvalidPhase {
@@ -190,227 +132,172 @@ func TestSetPhaseRejectsInvalidPhase(t *testing.T) {
 	}
 }
 
-func TestSubmitNightActionsAndResolveKill(t *testing.T) {
+func TestMistressBlocksDoctorAction(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
-		},
-	}
+	room := testRoom(7)
 	service.StartGame(room)
 
-	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionMafiaKill, "user-4"); err != nil {
-		t.Fatalf("mafia kill returned error: %v", err)
+	if _, err := service.SubmitAction(room.ID, "user-4", domain.GameActionBlock, "user-3"); err != nil {
+		t.Fatalf("block returned error: %v", err)
 	}
-	if _, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-2"); err != nil {
-		t.Fatalf("inspect returned error: %v", err)
-	}
-	game, err := service.SetPhase(room.ID, domain.GamePhaseDay)
-	if err != nil {
-		t.Fatalf("SetPhase day returned error: %v", err)
-	}
+	advanceToStep(t, service, room.ID, domain.GameStepNightDoctor)
 
-	target := findPlayer(t, game, "user-4")
-	if target.IsAlive {
-		t.Fatal("expected target to die after unresolved mafia kill")
-	}
-	if len(game.Events) == 0 {
-		t.Fatal("expected resolution events")
+	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionHeal, "user-5"); err != ErrActionUnavailable {
+		t.Fatalf("expected blocked doctor action to be unavailable, got %v", err)
 	}
 }
 
-func TestInspectCreatesImmediateResultEvent(t *testing.T) {
+func TestMistressCannotBlockSameTargetConsecutiveNights(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-		},
-	}
+	room := testRoom(7)
 	service.StartGame(room)
 
-	game, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-2")
+	if _, err := service.SubmitAction(room.ID, "user-4", domain.GameActionBlock, "user-1"); err != nil {
+		t.Fatalf("first block returned error: %v", err)
+	}
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseDay)
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseVoting)
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseNight)
+
+	if _, err := service.SubmitAction(room.ID, "user-4", domain.GameActionBlock, "user-1"); err != ErrActionUnavailable {
+		t.Fatalf("expected repeated block target to be unavailable, got %v", err)
+	}
+}
+
+func TestDoctorCannotHealSameTargetConsecutiveNights(t *testing.T) {
+	service := NewService()
+	room := testRoom(7)
+	service.StartGame(room)
+	advanceToStep(t, service, room.ID, domain.GameStepNightDoctor)
+
+	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionHeal, "user-5"); err != nil {
+		t.Fatalf("first heal returned error: %v", err)
+	}
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseDay)
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseVoting)
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseNight)
+	advanceToStep(t, service, room.ID, domain.GameStepNightDoctor)
+
+	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionHeal, "user-5"); err != ErrActionUnavailable {
+		t.Fatalf("expected repeated heal target to be unavailable, got %v", err)
+	}
+}
+
+func TestCommissionerSeesSideOnlyAndMistressCountsAsMafia(t *testing.T) {
+	service := NewService()
+	room := testRoom(7)
+	service.StartGame(room)
+	advanceToStep(t, service, room.ID, domain.GameStepNightCommissioner)
+
+	game, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-4")
 	if err != nil {
 		t.Fatalf("inspect returned error: %v", err)
-	}
-
-	if len(game.Events) < 2 {
-		t.Fatalf("expected recorded action and inspect result events, got %d", len(game.Events))
 	}
 
 	result := game.Events[len(game.Events)-1]
 	if result.Type != "inspect.resolved" {
 		t.Fatalf("expected inspect.resolved event, got %q", result.Type)
 	}
-	if result.Message != "Комісар перевірив Mafia: сторона Мафія." {
+	if result.Message != "Комісар перевірив Player 4: сторона Мафія." {
 		t.Fatalf("unexpected inspect result message: %q", result.Message)
 	}
+
+	view := ViewForPlayer(game, "user-1")
+	target := findPlayer(t, view, "user-4")
+	if target.Role != "" {
+		t.Fatalf("expected exact inspected role to stay hidden, got %q", target.Role)
+	}
+	if target.Side != domain.GameSideMafia {
+		t.Fatalf("expected mafia side, got %q", target.Side)
+	}
 }
 
-func TestInspectReportsTownSideForDoctor(t *testing.T) {
+func TestCommissionerCannotInspectSameTargetTwice(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-		},
-	}
+	room := testRoom(7)
 	service.StartGame(room)
+	advanceToStep(t, service, room.ID, domain.GameStepNightCommissioner)
 
-	game, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-3")
-	if err != nil {
-		t.Fatalf("inspect returned error: %v", err)
+	if _, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-2"); err != nil {
+		t.Fatalf("first inspect returned error: %v", err)
 	}
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseDay)
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseVoting)
+	_, _ = service.SetPhase(room.ID, domain.GamePhaseNight)
+	advanceToStep(t, service, room.ID, domain.GameStepNightCommissioner)
 
-	result := game.Events[len(game.Events)-1]
-	if result.Message != "Комісар перевірив Doctor: сторона Мирний." {
-		t.Fatalf("unexpected inspect result message: %q", result.Message)
+	if _, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-2"); err != ErrActionUnavailable {
+		t.Fatalf("expected repeated inspect target to be unavailable, got %v", err)
 	}
 }
 
-func TestViewForPlayerHidesUnseenRoles(t *testing.T) {
+func TestMafiaNeedsAllUnblockedMafiaToShootSameTarget(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
-		},
-	}
-
-	game := service.StartGame(room)
-	view := ViewForPlayer(game, "user-3")
-
-	if findPlayer(t, view, "user-3").Role != domain.GameRoleDoctor {
-		t.Fatal("expected viewer to see own role")
-	}
-	if findPlayer(t, view, "user-1").Role != "" {
-		t.Fatal("expected viewer not to see commissioner role")
-	}
-	if findPlayer(t, view, "user-2").Role != "" {
-		t.Fatal("expected viewer not to see mafia role")
-	}
-}
-
-func TestViewForMafiaShowsMafiaTeamOnly(t *testing.T) {
-	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "MafiaOne", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
-			{ID: "user-5", Nickname: "CivilianTwo", IsOwner: false},
-			{ID: "user-6", Nickname: "MafiaTwo", IsOwner: false},
-		},
-	}
-
-	game := service.StartGame(room)
-	view := ViewForPlayer(game, "user-2")
-
-	if findPlayer(t, view, "user-2").Role != domain.GameRoleMafia {
-		t.Fatal("expected mafia viewer to see own role")
-	}
-	if findPlayer(t, view, "user-6").Role != domain.GameRoleMafia {
-		t.Fatal("expected mafia viewer to see mafia teammate")
-	}
-	if findPlayer(t, view, "user-1").Role != "" {
-		t.Fatal("expected mafia viewer not to see commissioner role")
-	}
-}
-
-func TestViewForCommissionerShowsInspectedRoleAndPrivateEvent(t *testing.T) {
-	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-		},
-	}
+	room := testRoom(7)
 	service.StartGame(room)
-	game, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-2")
-	if err != nil {
-		t.Fatalf("inspect returned error: %v", err)
-	}
+	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
 
-	commissionerView := ViewForPlayer(game, "user-1")
-	if findPlayer(t, commissionerView, "user-2").Role != domain.GameRoleMafia {
-		t.Fatal("expected commissioner to see inspected target role")
-	}
-	if len(commissionerView.Events) != 2 {
-		t.Fatalf("expected commissioner to see inspect action and result, got %d events", len(commissionerView.Events))
-	}
-
-	doctorView := ViewForPlayer(game, "user-3")
-	if findPlayer(t, doctorView, "user-2").Role != "" {
-		t.Fatal("expected doctor not to see inspected mafia role")
-	}
-	if len(doctorView.Events) != 0 {
-		t.Fatalf("expected doctor not to see private inspect events, got %d events", len(doctorView.Events))
-	}
-}
-
-func TestDoctorCanPreventNightKill(t *testing.T) {
-	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
-		},
-	}
-	service.StartGame(room)
-
-	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionMafiaKill, "user-4"); err != nil {
-		t.Fatalf("mafia kill returned error: %v", err)
-	}
-	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionHeal, "user-4"); err != nil {
-		t.Fatalf("heal returned error: %v", err)
+	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionMafiaKill, "user-5"); err != nil {
+		t.Fatalf("first mafia kill returned error: %v", err)
 	}
 	game, err := service.SetPhase(room.ID, domain.GamePhaseDay)
 	if err != nil {
 		t.Fatalf("SetPhase day returned error: %v", err)
 	}
+	if !findPlayer(t, game, "user-5").IsAlive {
+		t.Fatal("expected target to survive when one mafia did not shoot")
+	}
+}
 
-	target := findPlayer(t, game, "user-4")
-	if !target.IsAlive {
+func TestMafiaSameTargetKillsUnlessDoctorHeals(t *testing.T) {
+	service := NewService()
+	room := testRoom(7)
+	service.StartGame(room)
+	advanceToStep(t, service, room.ID, domain.GameStepNightDoctor)
+	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionHeal, "user-5"); err != nil {
+		t.Fatalf("heal returned error: %v", err)
+	}
+	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
+	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionMafiaKill, "user-5"); err != nil {
+		t.Fatalf("first mafia kill returned error: %v", err)
+	}
+	if _, err := service.SubmitAction(room.ID, "user-7", domain.GameActionMafiaKill, "user-5"); err != nil {
+		t.Fatalf("second mafia kill returned error: %v", err)
+	}
+
+	game, err := service.SetPhase(room.ID, domain.GamePhaseDay)
+	if err != nil {
+		t.Fatalf("SetPhase day returned error: %v", err)
+	}
+	if !findPlayer(t, game, "user-5").IsAlive {
 		t.Fatal("expected target to survive after doctor heal")
 	}
 }
 
-func TestVotingResolvesExile(t *testing.T) {
+func TestMafiaDifferentTargetsMiss(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
-		ID:      "room-1",
-		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-			{ID: "user-3", Nickname: "Doctor", IsOwner: false},
-			{ID: "user-4", Nickname: "Civilian", IsOwner: false},
-		},
+	room := testRoom(7)
+	service.StartGame(room)
+	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
+
+	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionMafiaKill, "user-5"); err != nil {
+		t.Fatalf("first mafia kill returned error: %v", err)
 	}
+	if _, err := service.SubmitAction(room.ID, "user-7", domain.GameActionMafiaKill, "user-6"); err != nil {
+		t.Fatalf("second mafia kill returned error: %v", err)
+	}
+	game, err := service.SetPhase(room.ID, domain.GamePhaseDay)
+	if err != nil {
+		t.Fatalf("SetPhase day returned error: %v", err)
+	}
+	if !findPlayer(t, game, "user-5").IsAlive || !findPlayer(t, game, "user-6").IsAlive {
+		t.Fatal("expected both targets to survive when mafia splits shots")
+	}
+}
+
+func TestVotingResolvesExileAndTieSkipsExile(t *testing.T) {
+	service := NewService()
+	room := testRoom(7)
 	service.StartGame(room)
 	if _, err := service.SetPhase(room.ID, domain.GamePhaseVoting); err != nil {
 		t.Fatalf("SetPhase voting returned error: %v", err)
@@ -426,27 +313,61 @@ func TestVotingResolvesExile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetPhase night returned error: %v", err)
 	}
-
-	target := findPlayer(t, game, "user-2")
-	if target.IsAlive {
+	if findPlayer(t, game, "user-2").IsAlive {
 		t.Fatal("expected voted target to be exiled")
 	}
 }
 
-func TestSubmitActionRejectsWrongRole(t *testing.T) {
+func TestViewForMafiaDoesNotRevealMistress(t *testing.T) {
 	service := NewService()
-	room := domain.Room{
+	room := testRoom(7)
+
+	game := service.StartGame(room)
+	view := ViewForPlayer(game, "user-2")
+
+	if findPlayer(t, view, "user-2").Role != domain.GameRoleMafia {
+		t.Fatal("expected mafia viewer to see own role")
+	}
+	if findPlayer(t, view, "user-7").Role != domain.GameRoleMafia {
+		t.Fatal("expected mafia viewer to see ordinary mafia teammate")
+	}
+	if findPlayer(t, view, "user-4").Role != "" {
+		t.Fatal("expected mafia viewer not to see mistress role")
+	}
+}
+
+func advanceToStep(t *testing.T, service *Service, roomID string, step domain.GameStep) domain.Game {
+	t.Helper()
+	game, ok := service.GetByRoomID(roomID)
+	if !ok {
+		t.Fatalf("game for room %q not found", roomID)
+	}
+	for game.Step != step {
+		var err error
+		game, err = service.AdvancePhase(roomID)
+		if err != nil {
+			t.Fatalf("AdvancePhase returned error: %v", err)
+		}
+		if game.Step == domain.GameStepFinal {
+			t.Fatalf("reached final before step %q", step)
+		}
+	}
+	return game
+}
+
+func testRoom(playerCount int) domain.Room {
+	players := make([]domain.RoomPlayer, 0, playerCount)
+	for index := 1; index <= playerCount; index++ {
+		players = append(players, domain.RoomPlayer{
+			ID:       "user-" + string(rune('0'+index)),
+			Nickname: "Player " + string(rune('0'+index)),
+			IsOwner:  index == 1,
+		})
+	}
+	return domain.Room{
 		ID:      "room-1",
 		OwnerID: "user-1",
-		Players: []domain.RoomPlayer{
-			{ID: "user-1", Nickname: "Commissioner", IsOwner: true},
-			{ID: "user-2", Nickname: "Mafia", IsOwner: false},
-		},
-	}
-	service.StartGame(room)
-
-	if _, err := service.SubmitAction(room.ID, "user-1", domain.GameActionMafiaKill, "user-2"); err != ErrActionUnavailable {
-		t.Fatalf("expected ErrActionUnavailable, got %v", err)
+		Players: players,
 	}
 }
 
