@@ -1,0 +1,689 @@
+basePath: /
+definitions:
+  app.createRoomRequest:
+    properties:
+      maxPlayers:
+        example: 7
+        type: integer
+      name:
+        example: Game Night
+        type: string
+    type: object
+  app.loginRequest:
+    properties:
+      nickname:
+        example: Alice
+        type: string
+    type: object
+  app.setGamePhaseRequest:
+    properties:
+      phase:
+        allOf:
+        - $ref: '#/definitions/domain.GamePhase'
+        example: day
+    type: object
+  app.submitGameActionRequest:
+    properties:
+      targetId:
+        example: user-123
+        type: string
+      type:
+        allOf:
+        - $ref: '#/definitions/domain.GameActionType'
+        example: block
+    type: object
+  domain.Game:
+    properties:
+      actions:
+        items:
+          $ref: '#/definitions/domain.GameAction'
+        type: array
+      activePlayerId:
+        type: string
+      activePlayerNickname:
+        type: string
+      activeRole:
+        $ref: '#/definitions/domain.GameRole'
+      events:
+        items:
+          $ref: '#/definitions/domain.GameEvent'
+        type: array
+      firstSpeakerIndex:
+        type: integer
+      id:
+        type: string
+      phase:
+        $ref: '#/definitions/domain.GamePhase'
+      phaseDurationSeconds:
+        type: integer
+      phaseEndsAt:
+        type: string
+      phaseStartedAt:
+        type: string
+      players:
+        items:
+          $ref: '#/definitions/domain.GamePlayer'
+        type: array
+      roomId:
+        type: string
+      round:
+        type: integer
+      speechIndex:
+        type: integer
+      startedAt:
+        type: string
+      step:
+        $ref: '#/definitions/domain.GameStep'
+      updatedAt:
+        type: string
+    type: object
+  domain.GameAction:
+    properties:
+      actorId:
+        type: string
+      actorNickname:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: string
+      phase:
+        $ref: '#/definitions/domain.GamePhase'
+      round:
+        type: integer
+      targetId:
+        type: string
+      targetNickname:
+        type: string
+      type:
+        $ref: '#/definitions/domain.GameActionType'
+    type: object
+  domain.GameActionType:
+    enum:
+    - mafia_kill
+    - mistress_block
+    - inspect
+    - heal
+    - vote
+    type: string
+    x-enum-varnames:
+    - GameActionMafiaKill
+    - GameActionBlock
+    - GameActionInspect
+    - GameActionHeal
+    - GameActionVote
+  domain.GameEvent:
+    properties:
+      actorId:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: string
+      message:
+        type: string
+      phase:
+        $ref: '#/definitions/domain.GamePhase'
+      round:
+        type: integer
+      targetId:
+        type: string
+      type:
+        type: string
+    type: object
+  domain.GamePhase:
+    enum:
+    - night
+    - day
+    - voting
+    - final
+    type: string
+    x-enum-varnames:
+    - GamePhaseNight
+    - GamePhaseDay
+    - GamePhaseVoting
+    - GamePhaseFinal
+  domain.GamePlayer:
+    properties:
+      id:
+        type: string
+      isAlive:
+        type: boolean
+      isOwner:
+        type: boolean
+      nickname:
+        type: string
+      role:
+        $ref: '#/definitions/domain.GameRole'
+      side:
+        $ref: '#/definitions/domain.GameSide'
+    type: object
+  domain.GameRole:
+    enum:
+    - civilian
+    - mafia
+    - mistress
+    - commissioner
+    - doctor
+    type: string
+    x-enum-varnames:
+    - GameRoleCivilian
+    - GameRoleMafia
+    - GameRoleMistress
+    - GameRoleCommissioner
+    - GameRoleDoctor
+  domain.GameSide:
+    enum:
+    - town
+    - mafia
+    type: string
+    x-enum-varnames:
+    - GameSideTown
+    - GameSideMafia
+  domain.GameStep:
+    enum:
+    - night_mistress
+    - night_doctor
+    - night_commissioner
+    - night_mafia
+    - day_speech
+    - day_discussion
+    - voting
+    - final
+    type: string
+    x-enum-varnames:
+    - GameStepNightMistress
+    - GameStepNightDoctor
+    - GameStepNightCommissioner
+    - GameStepNightMafia
+    - GameStepDaySpeech
+    - GameStepDayDiscussion
+    - GameStepVoting
+    - GameStepFinal
+  domain.Room:
+    properties:
+      code:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: string
+      maxPlayers:
+        type: integer
+      name:
+        type: string
+      ownerId:
+        type: string
+      players:
+        items:
+          $ref: '#/definitions/domain.RoomPlayer'
+        type: array
+      status:
+        $ref: '#/definitions/domain.RoomStatus'
+    type: object
+  domain.RoomPlayer:
+    properties:
+      id:
+        type: string
+      isOwner:
+        type: boolean
+      nickname:
+        type: string
+    type: object
+  domain.RoomStatus:
+    enum:
+    - waiting
+    - preparation
+    - recruiting
+    - in_progress
+    - finished
+    type: string
+    x-enum-varnames:
+    - RoomStatusWaiting
+    - RoomStatusPreparing
+    - RoomStatusRecruiting
+    - RoomStatusInProgress
+    - RoomStatusFinished
+  domain.UserSession:
+    properties:
+      id:
+        type: string
+      nickname:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Real-time Mafia game server API
+  title: Mafia Game API
+  version: "1.0"
+paths:
+  /api/auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate user with nickname (creates if not exists)
+      parameters:
+      - description: Nickname
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/app.loginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid nickname
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Create or get user by nickname
+  /api/auth/logout:
+    post:
+      description: Revoke authentication token
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Logout current user
+  /api/games/{roomId}:
+    get:
+      description: Retrieve current game state (personalized for player)
+      parameters:
+      - description: Room ID
+        in: path
+        name: roomId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.Game'
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Not a room participant
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Game not found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Get game state
+  /api/games/{roomId}/actions:
+    post:
+      consumes:
+      - application/json
+      description: 'Player submits action: block, heal, inspect, mafia_kill, or vote'
+      parameters:
+      - description: Room ID
+        in: path
+        name: roomId
+        required: true
+        type: string
+      - description: Action details
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/app.submitGameActionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.Game'
+            type: object
+        "400":
+          description: Invalid action
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Action not allowed for your role
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Action blocked or unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Submit a night action or vote
+  /api/games/{roomId}/next-phase:
+    post:
+      description: Move game to next phase (resolves current phase first)
+      parameters:
+      - description: Room ID
+        in: path
+        name: roomId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.Game'
+            type: object
+        "400":
+          description: Cannot advance phase
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Only owner can advance
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Advance to next game phase
+  /api/games/{roomId}/phase:
+    post:
+      consumes:
+      - application/json
+      description: Change game phase (day/night/voting)
+      parameters:
+      - description: Room ID
+        in: path
+        name: roomId
+        required: true
+        type: string
+      - description: Phase to set
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/app.setGamePhaseRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.Game'
+            type: object
+        "400":
+          description: Invalid phase
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Only owner can set phase
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Set game phase manually
+  /api/me:
+    get:
+      description: Retrieve authenticated user profile
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.UserSession'
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Get current user info
+  /api/rooms:
+    get:
+      description: Get all active game rooms
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/domain.Room'
+              type: array
+            type: object
+      summary: List all available rooms
+    post:
+      consumes:
+      - application/json
+      description: Create a new Mafia game room
+      parameters:
+      - description: Room details
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/app.createRoomRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.Room'
+            type: object
+        "400":
+          description: Invalid input
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Create new game room
+  /api/rooms/{roomId}:
+    get:
+      description: Retrieve specific room info
+      parameters:
+      - description: Room ID
+        in: path
+        name: roomId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.Room'
+            type: object
+        "404":
+          description: Room not found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get room details
+  /api/rooms/{roomId}/join:
+    post:
+      description: Add current user to a room
+      parameters:
+      - description: Room ID
+        in: path
+        name: roomId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.Room'
+            type: object
+        "400":
+          description: Cannot join room
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Room not found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Join a game room
+  /api/rooms/{roomId}/leave:
+    post:
+      description: Remove current user from a room
+      parameters:
+      - description: Room ID
+        in: path
+        name: roomId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Cannot leave room
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Leave a game room
+  /api/rooms/{roomId}/start:
+    post:
+      description: Begin Mafia game with current room players
+      parameters:
+      - description: Room ID
+        in: path
+        name: roomId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/domain.Room'
+            type: object
+        "400":
+          description: Cannot start game
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Start a game in the room
+schemes:
+- http
+- https
+securityDefinitions:
+  Bearer:
+    description: Type "Bearer" followed by a space and JWT token
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

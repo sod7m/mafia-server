@@ -147,6 +147,23 @@ func TestMistressBlocksDoctorAction(t *testing.T) {
 	}
 }
 
+func TestBlockedPlayerCanStillVote(t *testing.T) {
+	service := NewService()
+	room := testRoom(7)
+	service.StartGame(room)
+
+	if _, err := service.SubmitAction(room.ID, "user-4", domain.GameActionBlock, "user-3"); err != nil {
+		t.Fatalf("block returned error: %v", err)
+	}
+	if _, err := service.SetPhase(room.ID, domain.GamePhaseVoting); err != nil {
+		t.Fatalf("SetPhase voting returned error: %v", err)
+	}
+
+	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionVote, "user-2"); err != nil {
+		t.Fatalf("expected blocked player to still vote, got %v", err)
+	}
+}
+
 func TestMistressCannotBlockSameTargetConsecutiveNights(t *testing.T) {
 	service := NewService()
 	room := testRoom(7)
@@ -246,6 +263,45 @@ func TestMafiaNeedsAllUnblockedMafiaToShootSameTarget(t *testing.T) {
 	}
 	if !findPlayer(t, game, "user-5").IsAlive {
 		t.Fatal("expected target to survive when one mafia did not shoot")
+	}
+}
+
+func TestSingleMafiaCanKill(t *testing.T) {
+	service := NewService()
+	room := testRoom(6)
+	service.StartGame(room)
+	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
+
+	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionMafiaKill, "user-5"); err != nil {
+		t.Fatalf("single mafia kill returned error: %v", err)
+	}
+	game, err := service.SetPhase(room.ID, domain.GamePhaseDay)
+	if err != nil {
+		t.Fatalf("SetPhase day returned error: %v", err)
+	}
+	if findPlayer(t, game, "user-5").IsAlive {
+		t.Fatal("expected target to die when the only alive mafia shoots")
+	}
+}
+
+func TestMafiaCanTargetSelf(t *testing.T) {
+	service := NewService()
+	room := testRoom(7)
+	service.StartGame(room)
+	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
+
+	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionMafiaKill, "user-2"); err != nil {
+		t.Fatalf("first mafia self-target kill returned error: %v", err)
+	}
+	if _, err := service.SubmitAction(room.ID, "user-7", domain.GameActionMafiaKill, "user-2"); err != nil {
+		t.Fatalf("second mafia self-target kill returned error: %v", err)
+	}
+	game, err := service.SetPhase(room.ID, domain.GamePhaseDay)
+	if err != nil {
+		t.Fatalf("SetPhase day returned error: %v", err)
+	}
+	if findPlayer(t, game, "user-2").IsAlive {
+		t.Fatal("expected mafia self-target to be applied when all mafia choose the same target")
 	}
 }
 

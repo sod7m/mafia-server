@@ -2,3 +2,7 @@
 .gocache/
 .gotelemetry/
 .gotmp/
+api.exe
+.env
+.env.*
+!.env.example

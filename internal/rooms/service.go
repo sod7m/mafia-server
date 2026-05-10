@@ -2,6 +2,7 @@ package rooms
 
 import (
 	"errors"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"mafia-server/internal/domain"
 	"mafia-server/internal/ids"
+	"mafia-server/internal/persistence"
 )
 
 var (
@@ -24,14 +26,43 @@ var (
 type Service struct {
 	mu    sync.RWMutex
 	rooms map[string]domain.Room
+	store persistence.Store
 }
 
 func NewService() *Service {
+	return NewServiceWithStore(persistence.NewNoopStore())
+}
+
+func NewServiceWithStore(store persistence.Store) *Service {
+	if store == nil {
+		store = persistence.NewNoopStore()
+	}
+
 	service := &Service{
 		rooms: make(map[string]domain.Room),
+		store: store,
 	}
-	service.seed()
+
+	var loaded map[string]domain.Room
+	err := store.Load("rooms.state", &loaded)
+	switch {
+	case errors.Is(err, persistence.ErrNotFound):
+		service.seed()
+		service.persistLocked()
+	case err != nil:
+		log.Printf("rooms: cannot load state from store: %v", err)
+		service.seed()
+	default:
+		service.rooms = loaded
+	}
+
 	return service
+}
+
+func (s *Service) persistLocked() {
+	if err := s.store.Save("rooms.state", s.rooms); err != nil {
+		log.Printf("rooms: cannot persist state: %v", err)
+	}
 }
 
 func (s *Service) AvailableRooms() []domain.Room {
@@ -47,6 +78,22 @@ func (s *Service) AvailableRooms() []domain.Room {
 
 	sortRooms(rooms)
 	return rooms
+}
+
+func (s *Service) RoomsByParticipant(userID string) []domain.Room {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]domain.Room, 0)
+	for _, room := range s.rooms {
+		if playerIndex(room.Players, userID) < 0 {
+			continue
+		}
+		result = append(result, cloneRoom(room))
+	}
+
+	sortRooms(result)
+	return result
 }
 
 func (s *Service) GetRoom(roomID string) (domain.Room, bool) {
@@ -94,6 +141,7 @@ func (s *Service) CreateRoom(user domain.UserSession, name string, maxPlayers in
 	}
 
 	s.rooms[room.ID] = room
+	s.persistLocked()
 	return cloneRoom(room), nil
 }
 
@@ -126,6 +174,7 @@ func (s *Service) JoinRoom(user domain.UserSession, roomID string) (domain.Room,
 	room.Status = domain.DeriveLobbyStatus(len(room.Players), room.MaxPlayers)
 
 	s.rooms[room.ID] = room
+	s.persistLocked()
 	return cloneRoom(room), nil
 }
 
@@ -146,6 +195,7 @@ func (s *Service) LeaveRoom(user domain.UserSession, roomID string) error {
 	room.Players = append(room.Players[:index], room.Players[index+1:]...)
 	if len(room.Players) == 0 {
 		delete(s.rooms, room.ID)
+		s.persistLocked()
 		return nil
 	}
 
@@ -155,6 +205,7 @@ func (s *Service) LeaveRoom(user domain.UserSession, roomID string) error {
 	}
 
 	s.rooms[room.ID] = room
+	s.persistLocked()
 	return nil
 }
 
@@ -186,6 +237,7 @@ func (s *Service) StartRoom(user domain.UserSession, roomID string) (domain.Room
 
 	room.Status = domain.RoomStatusInProgress
 	s.rooms[room.ID] = room
+	s.persistLocked()
 	return cloneRoom(room), nil
 }
 

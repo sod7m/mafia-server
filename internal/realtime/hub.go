@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,8 +30,9 @@ type Event struct {
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[*client]struct{}
+	mu            sync.RWMutex
+	clients       map[*client]struct{}
+	acceptOptions websocket.AcceptOptions
 }
 
 type client struct {
@@ -38,17 +40,22 @@ type client struct {
 }
 
 func NewHub() *Hub {
+	return NewHubWithOrigins([]string{"localhost:5173", "127.0.0.1:5173"})
+}
+
+func NewHubWithOrigins(originPatterns []string) *Hub {
+	patterns := normalizeOriginPatterns(originPatterns)
 	return &Hub{
 		clients: make(map[*client]struct{}),
+		acceptOptions: websocket.AcceptOptions{
+			OriginPatterns: patterns,
+		},
 	}
 }
 
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Local dev accepts browser and script clients. Production should replace
-		// this with a strict OriginPatterns allowlist from configuration.
-		InsecureSkipVerify: true,
-	})
+	options := h.acceptOptions
+	conn, err := websocket.Accept(w, r, &options)
 	if err != nil {
 		return
 	}
@@ -100,4 +107,24 @@ func (h *Hub) unregister(currentClient *client) {
 	delete(h.clients, currentClient)
 	close(currentClient.events)
 	h.mu.Unlock()
+}
+
+func normalizeOriginPatterns(originPatterns []string) []string {
+	if len(originPatterns) == 0 {
+		return []string{"localhost:5173", "127.0.0.1:5173"}
+	}
+
+	patterns := make([]string, 0, len(originPatterns))
+	for _, pattern := range originPatterns {
+		clean := strings.TrimSpace(pattern)
+		if clean == "" {
+			continue
+		}
+		patterns = append(patterns, clean)
+	}
+	if len(patterns) == 0 {
+		return []string{"localhost:5173", "127.0.0.1:5173"}
+	}
+
+	return patterns
 }

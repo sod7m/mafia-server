@@ -3,6 +3,7 @@ package games
 import (
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"sort"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"mafia-server/internal/domain"
 	"mafia-server/internal/ids"
+	"mafia-server/internal/persistence"
 )
 
 var (
@@ -74,11 +76,39 @@ var rolePattern = []domain.GameRole{
 type Service struct {
 	mu     sync.RWMutex
 	byRoom map[string]domain.Game
+	store  persistence.Store
 }
 
 func NewService() *Service {
-	return &Service{
+	return NewServiceWithStore(persistence.NewNoopStore())
+}
+
+func NewServiceWithStore(store persistence.Store) *Service {
+	if store == nil {
+		store = persistence.NewNoopStore()
+	}
+
+	service := &Service{
 		byRoom: make(map[string]domain.Game),
+		store:  store,
+	}
+
+	var loaded map[string]domain.Game
+	err := store.Load("games.state", &loaded)
+	switch {
+	case errors.Is(err, persistence.ErrNotFound):
+	case err != nil:
+		log.Printf("games: cannot load state from store: %v", err)
+	default:
+		service.byRoom = loaded
+	}
+
+	return service
+}
+
+func (s *Service) persistLocked() {
+	if err := s.store.Save("games.state", s.byRoom); err != nil {
+		log.Printf("games: cannot persist state: %v", err)
 	}
 }
 
@@ -90,6 +120,7 @@ func (s *Service) StartGame(room domain.Room) domain.Game {
 		game.Players = playersFromRoom(room)
 		game.UpdatedAt = formatTime(time.Now().UTC())
 		s.byRoom[room.ID] = game
+		s.persistLocked()
 		return cloneGame(game)
 	}
 
@@ -105,6 +136,7 @@ func (s *Service) StartGame(room domain.Room) domain.Game {
 	game.UpdatedAt = formatTime(now)
 
 	s.byRoom[room.ID] = game
+	s.persistLocked()
 	return cloneGame(game)
 }
 
@@ -166,6 +198,7 @@ func (s *Service) SetPhase(roomID string, phase domain.GamePhase) (domain.Game, 
 
 	transitionToPhase(&game, phase, time.Now().UTC())
 	s.byRoom[roomID] = game
+	s.persistLocked()
 	return cloneGame(game), nil
 }
 
@@ -180,6 +213,7 @@ func (s *Service) AdvancePhase(roomID string) (domain.Game, error) {
 
 	advanceStep(&game, time.Now().UTC(), "manual")
 	s.byRoom[roomID] = game
+	s.persistLocked()
 	return cloneGame(game), nil
 }
 
@@ -201,6 +235,10 @@ func (s *Service) AdvanceExpired(now time.Time) []domain.Game {
 		advanceStep(&game, now.UTC(), "timer")
 		s.byRoom[roomID] = game
 		advanced = append(advanced, cloneGame(game))
+	}
+
+	if len(advanced) > 0 {
+		s.persistLocked()
 	}
 
 	return advanced
@@ -237,7 +275,7 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 	if isPhaseExpired(game, now) {
 		return domain.Game{}, ErrActionUnavailable
 	}
-	if actionType != domain.GameActionBlock && isBlockedThisRound(game, actor.ID) {
+	if isNightRoleAction(actionType) && isBlockedThisRound(game, actor.ID) {
 		return domain.Game{}, ErrActionUnavailable
 	}
 	if err := validateAction(game, actor, target, actionType); err != nil {
@@ -285,6 +323,7 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 	}
 	game.UpdatedAt = nowText
 	s.byRoom[roomID] = game
+	s.persistLocked()
 	return cloneGame(game), nil
 }
 
@@ -609,7 +648,7 @@ func validateAction(game domain.Game, actor domain.GamePlayer, target domain.Gam
 			return ErrActionUnavailable
 		}
 	case domain.GameActionMafiaKill:
-		if game.Step != domain.GameStepNightMafia || actor.Role != domain.GameRoleMafia || isSelfTarget {
+		if game.Step != domain.GameStepNightMafia || actor.Role != domain.GameRoleMafia {
 			return ErrActionUnavailable
 		}
 	case domain.GameActionVote:
@@ -621,6 +660,15 @@ func validateAction(game domain.Game, actor domain.GamePlayer, target domain.Gam
 	}
 
 	return nil
+}
+
+func isNightRoleAction(actionType domain.GameActionType) bool {
+	switch actionType {
+	case domain.GameActionBlock, domain.GameActionHeal, domain.GameActionInspect, domain.GameActionMafiaKill:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateTargetHistory(game domain.Game, actorID string, actionType domain.GameActionType, targetID string) error {
@@ -739,7 +787,7 @@ func mafiaTarget(game domain.Game) (string, bool) {
 			unblockedMafia[player.ID] = struct{}{}
 		}
 	}
-	if len(unblockedMafia) < 2 {
+	if len(unblockedMafia) < 1 {
 		return "", false
 	}
 
