@@ -1,9 +1,11 @@
 package games
 
 import (
+	crand "crypto/rand"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"slices"
 	"sort"
 	"sync"
@@ -74,9 +76,10 @@ var rolePattern = []domain.GameRole{
 }
 
 type Service struct {
-	mu     sync.RWMutex
-	byRoom map[string]domain.Game
-	store  persistence.Store
+	mu       sync.RWMutex
+	byRoom   map[string]domain.Game
+	store    persistence.Store
+	rolePerm func(int) []int // injectable for tests; defaults to cryptoRandPerm
 }
 
 func NewService() *Service {
@@ -89,8 +92,9 @@ func NewServiceWithStore(store persistence.Store) *Service {
 	}
 
 	service := &Service{
-		byRoom: make(map[string]domain.Game),
-		store:  store,
+		byRoom:   make(map[string]domain.Game),
+		store:    store,
+		rolePerm: cryptoRandPerm,
 	}
 
 	var loaded map[string]domain.Game
@@ -117,7 +121,7 @@ func (s *Service) StartGame(room domain.Room) domain.Game {
 	defer s.mu.Unlock()
 
 	if game, ok := s.byRoom[room.ID]; ok {
-		game.Players = playersFromRoom(room)
+		game.Players = s.playersFromRoom(room)
 		game.UpdatedAt = formatTime(time.Now().UTC())
 		s.byRoom[room.ID] = game
 		s.persistLocked()
@@ -129,7 +133,7 @@ func (s *Service) StartGame(room domain.Room) domain.Game {
 		ID:      ids.NewID("game"),
 		RoomID:  room.ID,
 		Round:   1,
-		Players: playersFromRoom(room),
+		Players: s.playersFromRoom(room),
 	}
 	startNight(&game, now, false)
 	game.StartedAt = formatTime(now)
@@ -571,10 +575,11 @@ func formatTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func playersFromRoom(room domain.Room) []domain.GamePlayer {
+func (s *Service) playersFromRoom(room domain.Room) []domain.GamePlayer {
+	perm := s.rolePerm(len(room.Players))
 	players := make([]domain.GamePlayer, 0, len(room.Players))
-	for index, player := range room.Players {
-		role := roleForIndex(index)
+	for i, player := range room.Players {
+		role := roleForIndex(perm[i])
 		players = append(players, domain.GamePlayer{
 			ID:       player.ID,
 			Nickname: player.Nickname,
@@ -586,6 +591,30 @@ func playersFromRoom(room domain.Room) []domain.GamePlayer {
 	}
 
 	return players
+}
+
+// cryptoRandPerm returns a cryptographically random permutation of [0, n).
+func cryptoRandPerm(n int) []int {
+	perm := make([]int, n)
+	for i := range perm {
+		perm[i] = i
+	}
+	for i := n - 1; i > 0; i-- {
+		j := cryptoRandInt(i + 1)
+		perm[i], perm[j] = perm[j], perm[i]
+	}
+	return perm
+}
+
+func cryptoRandInt(max int) int {
+	if max <= 1 {
+		return 0
+	}
+	n, err := crand.Int(crand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		panic(fmt.Sprintf("crypto rand: %v", err))
+	}
+	return int(n.Int64())
 }
 
 func cloneGame(game domain.Game) domain.Game {

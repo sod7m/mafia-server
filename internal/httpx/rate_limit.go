@@ -41,8 +41,15 @@ func (l *FixedWindowLimiter) Allow(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Evict expired buckets to prevent unbounded memory growth.
+	for k, b := range l.buckets {
+		if now.After(b.resetAt) {
+			delete(l.buckets, k)
+		}
+	}
+
 	entry, ok := l.buckets[key]
-	if !ok || now.After(entry.resetAt) {
+	if !ok {
 		l.buckets[key] = bucket{
 			count:   1,
 			resetAt: now.Add(l.window),

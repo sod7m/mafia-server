@@ -17,8 +17,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"mafia-server/internal/app"
@@ -44,7 +46,10 @@ func main() {
 		log.Println("postgres persistence enabled")
 	}
 
-	handler := app.NewHandlerWithConfig(store, app.SecurityConfig{
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	handler := app.NewHandlerWithConfig(ctx, store, app.SecurityConfig{
 		CORSAllowedOrigins:         corsAllowedOrigins,
 		WSAllowedOrigins:           wsAllowedOrigins,
 		LoginRateLimitPerMinute:    loginRateLimitPerMinute,
@@ -55,10 +60,22 @@ func main() {
 		Handler: handler,
 	}
 
-	log.Printf("mafia server listening on %s", addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server failed: %v", err)
+	go func() {
+		log.Printf("mafia server listening on %s", addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server failed: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutting down...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown error: %v", err)
 	}
+	log.Println("server stopped")
 }
 
 func getenv(key, fallback string) string {

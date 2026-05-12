@@ -37,6 +37,7 @@ type Hub struct {
 
 type client struct {
 	events chan Event
+	kick   chan struct{} // closed or sent to when the buffer is full so the write loop can disconnect
 }
 
 func NewHub() *Hub {
@@ -63,6 +64,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	currentClient := &client{
 		events: make(chan Event, 16),
+		kick:   make(chan struct{}, 1),
 	}
 	h.register(currentClient)
 	defer h.unregister(currentClient)
@@ -71,6 +73,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-currentClient.kick:
+			log.Printf("websocket: disconnecting slow client (event buffer full)")
+			conn.Close(websocket.StatusPolicyViolation, "slow consumer")
 			return
 		case event := <-currentClient.events:
 			writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -92,6 +98,11 @@ func (h *Hub) Broadcast(event Event) {
 		select {
 		case currentClient.events <- event:
 		default:
+			// buffer full: signal the write loop to disconnect this slow client
+			select {
+			case currentClient.kick <- struct{}{}:
+			default:
+			}
 		}
 	}
 }

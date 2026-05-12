@@ -40,7 +40,7 @@ type testAPI struct {
 func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
 
-	server := httptest.NewServer(NewHandler())
+	server := httptest.NewServer(NewHandlerWithConfig(t.Context(), nil, DefaultSecurityConfig()))
 	t.Cleanup(server.Close)
 
 	return &testAPI{
@@ -178,14 +178,60 @@ func getGameFor(t *testing.T, api *testAPI, token string, roomID string) domain.
 	return game.Game
 }
 
+// getPlayerByRole finds the testPlayer whose game role matches the given role.
+// Each player sees their own role in the personalized game view.
+func getPlayerByRole(t *testing.T, api *testAPI, roomID string, players []testPlayer, role domain.GameRole) testPlayer {
+	t.Helper()
+	for _, p := range players {
+		game := getGameFor(t, api, p.Token, roomID)
+		for _, gp := range game.Players {
+			if gp.ID == p.ID && gp.Role == role {
+				return p
+			}
+		}
+	}
+	t.Fatalf("no player with role %q found in game", role)
+	return testPlayer{}
+}
+
+// getPlayersByRole returns all testPlayers whose game role matches the given role.
+func getPlayersByRole(t *testing.T, api *testAPI, roomID string, players []testPlayer, role domain.GameRole) []testPlayer {
+	t.Helper()
+	var result []testPlayer
+	for _, p := range players {
+		game := getGameFor(t, api, p.Token, roomID)
+		for _, gp := range game.Players {
+			if gp.ID == p.ID && gp.Role == role {
+				result = append(result, p)
+				break
+			}
+		}
+	}
+	return result
+}
+
+// findOtherPlayer returns the first player whose ID is not in excludeIDs.
+func findOtherPlayer(players []testPlayer, excludeIDs ...string) testPlayer {
+	excluded := make(map[string]bool, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excluded[id] = true
+	}
+	for _, p := range players {
+		if !excluded[p.ID] {
+			return p
+		}
+	}
+	return testPlayer{}
+}
+
 func TestBlockedPlayerCanStillVoteViaAPI(t *testing.T) {
 	api := newTestAPI(t)
 	roomID, players := setupStartedRoom(t, api, 7)
 
 	owner := players[0]
-	doctor := players[2]
-	mistress := players[3]
-	voteTarget := players[1]
+	doctor := getPlayerByRole(t, api, roomID, players, domain.GameRoleDoctor)
+	mistress := getPlayerByRole(t, api, roomID, players, domain.GameRoleMistress)
+	voteTarget := findOtherPlayer(players, owner.ID, doctor.ID, mistress.ID)
 
 	blockStatus, blockBody := api.post("/api/games/"+roomID+"/actions", mistress.Token, map[string]any{
 		"type":     "mistress_block",
@@ -208,8 +254,8 @@ func TestSingleMafiaCanKillViaAPI(t *testing.T) {
 	roomID, players := setupStartedRoom(t, api, 6)
 
 	owner := players[0]
-	mafia := players[1]
-	target := players[4]
+	mafia := getPlayerByRole(t, api, roomID, players, domain.GameRoleMafia)
+	target := findOtherPlayer(players, owner.ID, mafia.ID)
 
 	for range 3 {
 		advanceStatus, advanceBody := api.post("/api/games/"+roomID+"/next-phase", owner.Token, nil)
@@ -243,8 +289,12 @@ func TestMafiaCanSelfTargetViaAPI(t *testing.T) {
 	roomID, players := setupStartedRoom(t, api, 7)
 
 	owner := players[0]
-	mafiaOne := players[1]
-	mafiaTwo := players[6]
+	mafias := getPlayersByRole(t, api, roomID, players, domain.GameRoleMafia)
+	if len(mafias) < 2 {
+		t.Fatalf("expected at least 2 mafia players for 7-player game, got %d", len(mafias))
+	}
+	mafiaOne := mafias[0]
+	mafiaTwo := mafias[1]
 
 	for range 3 {
 		advanceStatus, advanceBody := api.post("/api/games/"+roomID+"/next-phase", owner.Token, nil)
@@ -284,9 +334,9 @@ func TestMistressBlockPreventsDoctorHeal(t *testing.T) {
 	roomID, players := setupStartedRoom(t, api, 7)
 
 	owner := players[0]
-	doctor := players[2]
-	mistress := players[3]
-	target := players[4]
+	doctor := getPlayerByRole(t, api, roomID, players, domain.GameRoleDoctor)
+	mistress := getPlayerByRole(t, api, roomID, players, domain.GameRoleMistress)
+	target := findOtherPlayer(players, owner.ID, doctor.ID, mistress.ID)
 
 	blockStatus, blockBody := api.post("/api/games/"+roomID+"/actions", mistress.Token, map[string]any{
 		"type":     "mistress_block",

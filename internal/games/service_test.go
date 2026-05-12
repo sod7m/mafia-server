@@ -7,8 +7,35 @@ import (
 	"mafia-server/internal/domain"
 )
 
+// identityPerm returns [0, 1, 2, ...n-1] — deterministic for tests.
+func identityPerm(n int) []int {
+	perm := make([]int, n)
+	for i := range perm {
+		perm[i] = i
+	}
+	return perm
+}
+
+// newTestService creates a Service with deterministic (identity) role permutation.
+func newTestService() *Service {
+	s := NewService()
+	s.rolePerm = identityPerm
+	return s
+}
+
+func findPlayerByRole(t *testing.T, game domain.Game, role domain.GameRole) domain.GamePlayer {
+	t.Helper()
+	for _, p := range game.Players {
+		if p.Role == role {
+			return p
+		}
+	}
+	t.Fatalf("no player with role %q found", role)
+	return domain.GamePlayer{}
+}
+
 func TestStartGameCreatesNightMistressStep(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 
 	game := service.StartGame(room)
@@ -31,22 +58,23 @@ func TestStartGameCreatesNightMistressStep(t *testing.T) {
 	if game.PhaseDurationSeconds != 15 {
 		t.Fatalf("expected mistress duration 15, got %d", game.PhaseDurationSeconds)
 	}
+	// With identity permutation: rolePattern index 0=Commissioner, 1=Mafia, 2=Doctor, 3=Mistress.
 	if findPlayer(t, game, "user-1").Role != domain.GameRoleCommissioner {
-		t.Fatalf("expected first player commissioner role, got %q", findPlayer(t, game, "user-1").Role)
+		t.Fatalf("expected user-1 commissioner role, got %q", findPlayer(t, game, "user-1").Role)
 	}
 	if findPlayer(t, game, "user-2").Role != domain.GameRoleMafia {
-		t.Fatalf("expected second player mafia role, got %q", findPlayer(t, game, "user-2").Role)
+		t.Fatalf("expected user-2 mafia role, got %q", findPlayer(t, game, "user-2").Role)
 	}
 	if findPlayer(t, game, "user-3").Role != domain.GameRoleDoctor {
-		t.Fatalf("expected third player doctor role, got %q", findPlayer(t, game, "user-3").Role)
+		t.Fatalf("expected user-3 doctor role, got %q", findPlayer(t, game, "user-3").Role)
 	}
 	if findPlayer(t, game, "user-4").Role != domain.GameRoleMistress {
-		t.Fatalf("expected fourth player mistress role, got %q", findPlayer(t, game, "user-4").Role)
+		t.Fatalf("expected user-4 mistress role, got %q", findPlayer(t, game, "user-4").Role)
 	}
 }
 
 func TestStartGameIsIdempotentPerRoom(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 
 	first := service.StartGame(room)
@@ -58,7 +86,7 @@ func TestStartGameIsIdempotentPerRoom(t *testing.T) {
 }
 
 func TestAdvancePhaseFollowsNightAndDaySteps(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 
@@ -105,7 +133,7 @@ func TestAdvancePhaseFollowsNightAndDaySteps(t *testing.T) {
 }
 
 func TestAdvanceExpiredAdvancesTimedOutSubStep(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	started := service.StartGame(room)
 	phaseEndsAt, err := time.Parse(time.RFC3339Nano, started.PhaseEndsAt)
@@ -123,7 +151,7 @@ func TestAdvanceExpiredAdvancesTimedOutSubStep(t *testing.T) {
 }
 
 func TestSetPhaseRejectsInvalidPhase(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 
@@ -133,7 +161,7 @@ func TestSetPhaseRejectsInvalidPhase(t *testing.T) {
 }
 
 func TestMistressBlocksDoctorAction(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 
@@ -148,7 +176,7 @@ func TestMistressBlocksDoctorAction(t *testing.T) {
 }
 
 func TestBlockedPlayerCanStillVote(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 
@@ -165,7 +193,7 @@ func TestBlockedPlayerCanStillVote(t *testing.T) {
 }
 
 func TestMistressCannotBlockSameTargetConsecutiveNights(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 
@@ -182,7 +210,7 @@ func TestMistressCannotBlockSameTargetConsecutiveNights(t *testing.T) {
 }
 
 func TestDoctorCannotHealSameTargetConsecutiveNights(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 	advanceToStep(t, service, room.ID, domain.GameStepNightDoctor)
@@ -201,7 +229,7 @@ func TestDoctorCannotHealSameTargetConsecutiveNights(t *testing.T) {
 }
 
 func TestCommissionerSeesSideOnlyAndMistressCountsAsMafia(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 	advanceToStep(t, service, room.ID, domain.GameStepNightCommissioner)
@@ -230,7 +258,7 @@ func TestCommissionerSeesSideOnlyAndMistressCountsAsMafia(t *testing.T) {
 }
 
 func TestCommissionerCannotInspectSameTargetTwice(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 	advanceToStep(t, service, room.ID, domain.GameStepNightCommissioner)
@@ -249,7 +277,7 @@ func TestCommissionerCannotInspectSameTargetTwice(t *testing.T) {
 }
 
 func TestMafiaNeedsAllUnblockedMafiaToShootSameTarget(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
@@ -267,7 +295,7 @@ func TestMafiaNeedsAllUnblockedMafiaToShootSameTarget(t *testing.T) {
 }
 
 func TestSingleMafiaCanKill(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(6)
 	service.StartGame(room)
 	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
@@ -285,7 +313,7 @@ func TestSingleMafiaCanKill(t *testing.T) {
 }
 
 func TestMafiaCanTargetSelf(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
@@ -306,7 +334,7 @@ func TestMafiaCanTargetSelf(t *testing.T) {
 }
 
 func TestMafiaSameTargetKillsUnlessDoctorHeals(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 	advanceToStep(t, service, room.ID, domain.GameStepNightDoctor)
@@ -331,7 +359,7 @@ func TestMafiaSameTargetKillsUnlessDoctorHeals(t *testing.T) {
 }
 
 func TestMafiaDifferentTargetsMiss(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
@@ -352,7 +380,7 @@ func TestMafiaDifferentTargetsMiss(t *testing.T) {
 }
 
 func TestVotingResolvesExileAndTieSkipsExile(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
 	if _, err := service.SetPhase(room.ID, domain.GamePhaseVoting); err != nil {
@@ -375,19 +403,36 @@ func TestVotingResolvesExileAndTieSkipsExile(t *testing.T) {
 }
 
 func TestViewForMafiaDoesNotRevealMistress(t *testing.T) {
-	service := NewService()
+	service := newTestService()
 	room := testRoom(7)
 
 	game := service.StartGame(room)
-	view := ViewForPlayer(game, "user-2")
 
-	if findPlayer(t, view, "user-2").Role != domain.GameRoleMafia {
+	// Use findPlayerByRole to locate players regardless of seat order.
+	mafia1 := findPlayerByRole(t, game, domain.GameRoleMafia)
+	mistress := findPlayerByRole(t, game, domain.GameRoleMistress)
+
+	// Find a second mafia player (there are two in a 7-player game).
+	var mafia2 domain.GamePlayer
+	for _, p := range game.Players {
+		if p.Role == domain.GameRoleMafia && p.ID != mafia1.ID {
+			mafia2 = p
+			break
+		}
+	}
+	if mafia2.ID == "" {
+		t.Fatal("expected at least two mafia players in a 7-player game")
+	}
+
+	view := ViewForPlayer(game, mafia1.ID)
+
+	if findPlayer(t, view, mafia1.ID).Role != domain.GameRoleMafia {
 		t.Fatal("expected mafia viewer to see own role")
 	}
-	if findPlayer(t, view, "user-7").Role != domain.GameRoleMafia {
+	if findPlayer(t, view, mafia2.ID).Role != domain.GameRoleMafia {
 		t.Fatal("expected mafia viewer to see ordinary mafia teammate")
 	}
-	if findPlayer(t, view, "user-4").Role != "" {
+	if findPlayer(t, view, mistress.ID).Role != "" {
 		t.Fatal("expected mafia viewer not to see mistress role")
 	}
 }

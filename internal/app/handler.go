@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"mafia-server/docs"
 	"mafia-server/internal/auth"
 	"mafia-server/internal/domain"
 	"mafia-server/internal/games"
@@ -42,14 +43,14 @@ func DefaultSecurityConfig() SecurityConfig {
 }
 
 func NewHandler() http.Handler {
-	return NewHandlerWithConfig(persistence.NewNoopStore(), DefaultSecurityConfig())
+	return NewHandlerWithConfig(context.Background(), persistence.NewNoopStore(), DefaultSecurityConfig())
 }
 
 func NewHandlerWithStore(store persistence.Store) http.Handler {
-	return NewHandlerWithConfig(store, DefaultSecurityConfig())
+	return NewHandlerWithConfig(context.Background(), store, DefaultSecurityConfig())
 }
 
-func NewHandlerWithConfig(store persistence.Store, securityConfig SecurityConfig) http.Handler {
+func NewHandlerWithConfig(ctx context.Context, store persistence.Store, securityConfig SecurityConfig) http.Handler {
 	if securityConfig.LoginRateLimitPerMinute <= 0 {
 		securityConfig.LoginRateLimitPerMinute = DefaultSecurityConfig().LoginRateLimitPerMinute
 	}
@@ -89,7 +90,7 @@ func NewHandlerWithConfig(store persistence.Store, securityConfig SecurityConfig
 	mux.HandleFunc("POST /api/games/{roomId}/actions", handler.submitGameAction)
 	mux.Handle("GET /ws", handler.realtime)
 
-	handler.startPhaseTicker(context.Background())
+	handler.startPhaseTicker(ctx)
 	return httpx.WithCORSOrigins(mux, securityConfig.CORSAllowedOrigins)
 }
 
@@ -560,7 +561,7 @@ func (h *Handler) swaggerUI(w http.ResponseWriter, r *http.Request) {
   <title>Mafia API</title>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3.52.0/swagger-ui.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.21.0/swagger-ui.css">
   <style>
     html {
       box-sizing: border-box;
@@ -580,7 +581,7 @@ func (h *Handler) swaggerUI(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3.52.0/swagger-ui-bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.21.0/swagger-ui-bundle.js"></script>
   <script>
   window.onload = function() {
     SwaggerUIBundle({
@@ -599,9 +600,9 @@ func (h *Handler) swaggerUI(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, html)
 }
 
-func (h *Handler) swaggerJSON(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) swaggerJSON(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	http.ServeFile(w, r, "docs/swagger.json")
+	w.Write(docs.SwaggerJSON) //nolint:errcheck
 }
 
 func (h *Handler) requireUser(w http.ResponseWriter, r *http.Request) (domain.UserSession, bool) {

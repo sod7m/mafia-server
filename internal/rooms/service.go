@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	ErrInvalidRoomName  = errors.New("room name is required")
+	ErrInvalidRoomName  = errors.New("room name must be between 1 and 80 characters")
 	ErrRoomNotFound     = errors.New("room not found")
 	ErrRoomUnavailable  = errors.New("room is not available")
 	ErrRoomFull         = errors.New("room is full")
@@ -47,11 +47,9 @@ func NewServiceWithStore(store persistence.Store) *Service {
 	err := store.Load("rooms.state", &loaded)
 	switch {
 	case errors.Is(err, persistence.ErrNotFound):
-		service.seed()
 		service.persistLocked()
 	case err != nil:
 		log.Printf("rooms: cannot load state from store: %v", err)
-		service.seed()
 	default:
 		service.rooms = loaded
 	}
@@ -109,7 +107,7 @@ func (s *Service) GetRoom(roomID string) (domain.Room, bool) {
 
 func (s *Service) CreateRoom(user domain.UserSession, name string, maxPlayers int) (domain.Room, error) {
 	cleanName := strings.TrimSpace(name)
-	if cleanName == "" {
+	if cleanName == "" || len([]rune(cleanName)) > 80 {
 		return domain.Room{}, ErrInvalidRoomName
 	}
 
@@ -239,44 +237,6 @@ func (s *Service) StartRoom(user domain.UserSession, roomID string) (domain.Room
 	s.rooms[room.ID] = room
 	s.persistLocked()
 	return cloneRoom(room), nil
-}
-
-func (s *Service) seed() {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	seedRooms := []domain.Room{
-		{
-			ID:         "bronx-night",
-			Code:       "BRX731",
-			Name:       "Бронкс після заходу",
-			Status:     domain.RoomStatusWaiting,
-			MaxPlayers: 12,
-			OwnerID:    "seed-owner-1",
-			Players: []domain.RoomPlayer{
-				{ID: "seed-owner-1", Nickname: "DonVito", IsOwner: true},
-				{ID: "seed-player-1", Nickname: "Capo77", IsOwner: false},
-			},
-			CreatedAt: now,
-		},
-		{
-			ID:         "silent-table",
-			Code:       "SLN502",
-			Name:       "Тиха переговорна",
-			Status:     domain.RoomStatusRecruiting,
-			MaxPlayers: 10,
-			OwnerID:    "seed-owner-2",
-			Players: []domain.RoomPlayer{
-				{ID: "seed-owner-2", Nickname: "Detective", IsOwner: true},
-				{ID: "seed-player-2", Nickname: "Shadow", IsOwner: false},
-				{ID: "seed-player-3", Nickname: "Medic", IsOwner: false},
-				{ID: "seed-player-4", Nickname: "Margo", IsOwner: false},
-			},
-			CreatedAt: now,
-		},
-	}
-
-	for _, room := range seedRooms {
-		s.rooms[room.ID] = room
-	}
 }
 
 func (s *Service) existingCodesLocked() map[string]struct{} {

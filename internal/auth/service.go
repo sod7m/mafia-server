@@ -6,11 +6,14 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"mafia-server/internal/domain"
 	"mafia-server/internal/ids"
 	"mafia-server/internal/persistence"
 )
+
+const sessionTTL = 24 * time.Hour
 
 var (
 	ErrInvalidNickname = errors.New("nickname must be between 2 and 20 characters")
@@ -22,9 +25,14 @@ type LoginResult struct {
 	Token string             `json:"token"`
 }
 
+type sessionEntry struct {
+	User      domain.UserSession
+	ExpiresAt time.Time
+}
+
 type Service struct {
 	mu       sync.RWMutex
-	sessions map[string]domain.UserSession
+	sessions map[string]sessionEntry
 	store    persistence.Store
 }
 
@@ -38,10 +46,11 @@ func NewServiceWithStore(store persistence.Store) *Service {
 	}
 
 	service := &Service{
-		sessions: make(map[string]domain.UserSession),
+		sessions: make(map[string]sessionEntry),
 		store:    store,
 	}
 
+	// Load legacy flat map (map[string]domain.UserSession) and convert to sessionEntry.
 	var loaded map[string]domain.UserSession
 	err := store.Load("auth.sessions", &loaded)
 	switch {
@@ -49,15 +58,32 @@ func NewServiceWithStore(store persistence.Store) *Service {
 	case err != nil:
 		log.Printf("auth: cannot load sessions from store: %v", err)
 	default:
-		service.sessions = loaded
+		expiry := time.Now().UTC().Add(sessionTTL)
+		for token, user := range loaded {
+			service.sessions[token] = sessionEntry{User: user, ExpiresAt: expiry}
+		}
 	}
 
 	return service
 }
 
+// persistLocked saves sessions as a flat map[token]UserSession for store compatibility.
 func (s *Service) persistLocked() {
-	if err := s.store.Save("auth.sessions", s.sessions); err != nil {
+	flat := make(map[string]domain.UserSession, len(s.sessions))
+	for token, entry := range s.sessions {
+		flat[token] = entry.User
+	}
+	if err := s.store.Save("auth.sessions", flat); err != nil {
 		log.Printf("auth: cannot persist sessions: %v", err)
+	}
+}
+
+// evictExpiredLocked removes sessions whose TTL has elapsed. Must be called with s.mu held.
+func (s *Service) evictExpiredLocked(now time.Time) {
+	for token, entry := range s.sessions {
+		if now.After(entry.ExpiresAt) {
+			delete(s.sessions, token)
+		}
 	}
 }
 
@@ -67,6 +93,7 @@ func (s *Service) Login(nickname string) (LoginResult, error) {
 		return LoginResult{}, ErrInvalidNickname
 	}
 
+	now := time.Now().UTC()
 	user := domain.UserSession{
 		ID:       ids.NewID("usr"),
 		Nickname: cleanNickname,
@@ -74,7 +101,8 @@ func (s *Service) Login(nickname string) (LoginResult, error) {
 	token := ids.NewToken()
 
 	s.mu.Lock()
-	s.sessions[token] = user
+	s.evictExpiredLocked(now)
+	s.sessions[token] = sessionEntry{User: user, ExpiresAt: now.Add(sessionTTL)}
 	s.persistLocked()
 	s.mu.Unlock()
 
@@ -90,9 +118,16 @@ func (s *Service) Logout(token string) {
 
 func (s *Service) UserByToken(token string) (domain.UserSession, bool) {
 	s.mu.RLock()
-	user, ok := s.sessions[token]
+	entry, ok := s.sessions[token]
 	s.mu.RUnlock()
-	return user, ok
+	if !ok {
+		return domain.UserSession{}, false
+	}
+	if time.Now().UTC().After(entry.ExpiresAt) {
+		// Expired — evict lazily on next write; treat as not found.
+		return domain.UserSession{}, false
+	}
+	return entry.User, true
 }
 
 func TokenFromRequest(r *http.Request) string {
