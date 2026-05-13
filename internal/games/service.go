@@ -56,23 +56,42 @@ var nightSteps = []nightStep{
 	{step: domain.GameStepNightMafia, role: domain.GameRoleMafia},
 }
 
-var rolePattern = []domain.GameRole{
-	domain.GameRoleCommissioner,
-	domain.GameRoleMafia,
-	domain.GameRoleDoctor,
-	domain.GameRoleMistress,
-	domain.GameRoleCivilian,
-	domain.GameRoleCivilian,
-	domain.GameRoleMafia,
-	domain.GameRoleCivilian,
-	domain.GameRoleCivilian,
-	domain.GameRoleMafia,
-	domain.GameRoleCivilian,
-	domain.GameRoleCivilian,
-	domain.GameRoleMafia,
-	domain.GameRoleCivilian,
-	domain.GameRoleCivilian,
-	domain.GameRoleCivilian,
+// rolesForCount returns the role slice for n players.
+// The slice is shuffled by rolePerm so the order here is canonical, not seat order.
+//
+//	 6–7  players: 1 Mafia, 1 Commissioner, 1 Doctor
+//	 8–10 players: 2 Mafia, 1 Commissioner, 1 Doctor
+//	11–13 players: 2 Mafia, 1 Commissioner, 1 Doctor, 1 Mistress
+//	14–16 players: 3 Mafia, 1 Commissioner, 1 Doctor, 1 Mistress
+func rolesForCount(n int) []domain.GameRole {
+	var mafiaCount int
+	hasMistress := false
+	switch {
+	case n <= 7:
+		mafiaCount = 1
+	case n <= 10:
+		mafiaCount = 2
+	case n <= 13:
+		mafiaCount = 2
+		hasMistress = true
+	default:
+		mafiaCount = 3
+		hasMistress = true
+	}
+
+	roles := make([]domain.GameRole, 0, n)
+	roles = append(roles, domain.GameRoleCommissioner)
+	roles = append(roles, domain.GameRoleDoctor)
+	for range mafiaCount {
+		roles = append(roles, domain.GameRoleMafia)
+	}
+	if hasMistress {
+		roles = append(roles, domain.GameRoleMistress)
+	}
+	for len(roles) < n {
+		roles = append(roles, domain.GameRoleCivilian)
+	}
+	return roles
 }
 
 type Service struct {
@@ -439,10 +458,21 @@ func advanceNightRoleStep(game *domain.Game, now time.Time) {
 
 func setNextNightStep(game *domain.Game, startIndex int, now time.Time) {
 	for index := startIndex; index < len(nightSteps); index++ {
-		if hasAliveRole(game.Players, nightSteps[index].role) {
-			setStepWindow(game, nightSteps[index].step, now)
-			return
+		step := nightSteps[index]
+		if !hasRole(game.Players, step.role) {
+			// Role not assigned in this game — skip without timer so players
+			// learn upfront which special roles are in play.
+			continue
 		}
+		// Role exists: always show the full timer even if the holder died.
+		// This hides whether an eliminated player was the doctor, commissioner,
+		// or mistress — observers cannot deduce it from a skipped step.
+		// Mafia is the only exception: if all mafia died the game is already over.
+		if step.role == domain.GameRoleMafia && !hasAliveRole(game.Players, step.role) {
+			continue
+		}
+		setStepWindow(game, step.step, now)
+		return
 	}
 
 	resolveNight(game)
@@ -451,6 +481,15 @@ func setNextNightStep(game *domain.Game, startIndex int, now time.Time) {
 		return
 	}
 	startDaySpeeches(game, now)
+}
+
+func hasRole(players []domain.GamePlayer, role domain.GameRole) bool {
+	for _, player := range players {
+		if player.Role == role {
+			return true
+		}
+	}
+	return false
 }
 
 func startDaySpeeches(game *domain.Game, now time.Time) {
@@ -576,10 +615,11 @@ func formatTime(value time.Time) string {
 }
 
 func (s *Service) playersFromRoom(room domain.Room) []domain.GamePlayer {
+	roles := rolesForCount(len(room.Players))
 	perm := s.rolePerm(len(room.Players))
 	players := make([]domain.GamePlayer, 0, len(room.Players))
 	for i, player := range room.Players {
-		role := roleForIndex(perm[i])
+		role := roles[perm[i]]
 		players = append(players, domain.GamePlayer{
 			ID:       player.ID,
 			Nickname: player.Nickname,
@@ -622,14 +662,6 @@ func cloneGame(game domain.Game) domain.Game {
 	game.Actions = append([]domain.GameAction(nil), game.Actions...)
 	game.Events = append([]domain.GameEvent(nil), game.Events...)
 	return game
-}
-
-func roleForIndex(index int) domain.GameRole {
-	if index < len(rolePattern) {
-		return rolePattern[index]
-	}
-
-	return domain.GameRoleCivilian
 }
 
 func playerIndex(players []domain.GamePlayer, playerID string) int {

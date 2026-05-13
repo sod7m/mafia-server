@@ -226,7 +226,7 @@ func findOtherPlayer(players []testPlayer, excludeIDs ...string) testPlayer {
 
 func TestBlockedPlayerCanStillVoteViaAPI(t *testing.T) {
 	api := newTestAPI(t)
-	roomID, players := setupStartedRoom(t, api, 7)
+	roomID, players := setupStartedRoom(t, api, 11)
 
 	owner := players[0]
 	doctor := getPlayerByRole(t, api, roomID, players, domain.GameRoleDoctor)
@@ -257,7 +257,8 @@ func TestSingleMafiaCanKillViaAPI(t *testing.T) {
 	mafia := getPlayerByRole(t, api, roomID, players, domain.GameRoleMafia)
 	target := findOtherPlayer(players, owner.ID, mafia.ID)
 
-	for range 3 {
+	// 6-player game has no Mistress: doctor → commissioner → mafia (2 advances)
+	for range 2 {
 		advanceStatus, advanceBody := api.post("/api/games/"+roomID+"/next-phase", owner.Token, nil)
 		mustStatus(t, advanceStatus, http.StatusOK, advanceBody)
 	}
@@ -286,17 +287,18 @@ func TestSingleMafiaCanKillViaAPI(t *testing.T) {
 
 func TestMafiaCanSelfTargetViaAPI(t *testing.T) {
 	api := newTestAPI(t)
-	roomID, players := setupStartedRoom(t, api, 7)
+	roomID, players := setupStartedRoom(t, api, 8) // 8-player game = 2 mafia
 
 	owner := players[0]
 	mafias := getPlayersByRole(t, api, roomID, players, domain.GameRoleMafia)
 	if len(mafias) < 2 {
-		t.Fatalf("expected at least 2 mafia players for 7-player game, got %d", len(mafias))
+		t.Fatalf("expected at least 2 mafia players for 8-player game, got %d", len(mafias))
 	}
 	mafiaOne := mafias[0]
 	mafiaTwo := mafias[1]
 
-	for range 3 {
+	// 8-player game has no Mistress: doctor → commissioner → mafia (2 advances)
+	for range 2 {
 		advanceStatus, advanceBody := api.post("/api/games/"+roomID+"/next-phase", owner.Token, nil)
 		mustStatus(t, advanceStatus, http.StatusOK, advanceBody)
 	}
@@ -331,7 +333,7 @@ func TestMafiaCanSelfTargetViaAPI(t *testing.T) {
 
 func TestMistressBlockPreventsDoctorHeal(t *testing.T) {
 	api := newTestAPI(t)
-	roomID, players := setupStartedRoom(t, api, 7)
+	roomID, players := setupStartedRoom(t, api, 11)
 
 	owner := players[0]
 	doctor := getPlayerByRole(t, api, roomID, players, domain.GameRoleDoctor)
@@ -402,16 +404,22 @@ func TestVotingResolvesExile(t *testing.T) {
 
 func TestGameStartsAtNight(t *testing.T) {
 	api := newTestAPI(t)
-	roomID, players := setupStartedRoom(t, api, 7)
 
-	owner := players[0]
-	game := getGameFor(t, api, owner.Token, roomID)
-
-	if game.Phase != domain.GamePhaseNight {
-		t.Fatalf("expected game to start at night phase, got %s", game.Phase)
+	// 7-player game (no Mistress) starts at night_doctor.
+	roomID7, players7 := setupStartedRoom(t, api, 7)
+	game7 := getGameFor(t, api, players7[0].Token, roomID7)
+	if game7.Phase != domain.GamePhaseNight {
+		t.Fatalf("expected night phase, got %s", game7.Phase)
 	}
-	if game.Step != domain.GameStepNightMistress {
-		t.Fatalf("expected game to start at night_mistress step, got %s", game.Step)
+	if game7.Step != domain.GameStepNightDoctor {
+		t.Fatalf("expected night_doctor step for 7-player game, got %s", game7.Step)
+	}
+
+	// 11-player game (has Mistress) starts at night_mistress.
+	roomID11, players11 := setupStartedRoom(t, api, 11)
+	game11 := getGameFor(t, api, players11[0].Token, roomID11)
+	if game11.Step != domain.GameStepNightMistress {
+		t.Fatalf("expected night_mistress step for 11-player game, got %s", game11.Step)
 	}
 }
 

@@ -550,7 +550,13 @@ func (h *Handler) submitGameAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.broadcastGameUpdated(game.RoomID)
+	// Votes are public — broadcast immediately.
+	// Night actions are silent: broadcasting on submission would let observers
+	// correlate action timing and deduce who is alive by when steps skip.
+	// All players receive the updated state when the phase timer expires.
+	if request.Type == domain.GameActionVote {
+		h.broadcastGameUpdated(game.RoomID)
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
 }
 

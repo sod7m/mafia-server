@@ -230,18 +230,20 @@ Quick reference:
 Current game snapshot starts with:
 
 - `phase: night`
-- `step: night_mistress`
+- `step: night_mistress` (or `night_doctor` when no Mistress in the game)
 - `round: 1`
 - `phaseStartedAt`
 - `phaseEndsAt`
 - `phaseDurationSeconds`
 - room players copied into game players
-- deterministic dev roles assigned by seat order:
-  - commissioner
-  - mafia
-  - doctor
-  - mistress
-  - civilians, with a second ordinary mafia at seat 7
+- roles assigned via cryptographically random Fisher-Yates shuffle based on player count:
+
+| Players | Mafia | Commissioner | Doctor | Mistress | Civilians |
+|---------|-------|--------------|--------|----------|-----------|
+| 6–7     | 1     | 1            | 1      | —        | 3–4       |
+| 8–10    | 2     | 1            | 1      | —        | 4–6       |
+| 11–13   | 2     | 1            | 1      | 1        | 6–8       |
+| 14–16   | 3     | 1            | 1      | 1        | 8–10      |
 
 Change phase:
 
@@ -263,9 +265,10 @@ Switching from a non-night phase back to `night` increments the game round.
 
 Preferred step flow:
 
-- `night_mistress -> night_doctor -> night_commissioner -> night_mafia`
+- Night: steps for roles present in the game only — `night_mistress` (11+ players), `night_doctor`, `night_commissioner`, `night_mafia`
+- If a role holder dies, their night step still runs the full timer (preserves incognito).
 - `day_speech` once per alive player, rotating first speaker by round
-- `day_discussion -> voting -> night_mistress`
+- `day_discussion -> voting -> (next night)`
 - `POST /api/games/{roomId}/next-phase` advances the current step.
 - The backend also advances expired steps automatically.
 
@@ -318,4 +321,4 @@ Events sent by server:
 - `rooms.updated`
 - `room.updated`
 - `room.deleted`
-- `game.updated` room-level signal after room start, phase changes and submitted actions
+- `game.updated` room-level signal after room start, phase/step changes and submitted `vote` actions (night actions are silent to preserve timing incognito)
