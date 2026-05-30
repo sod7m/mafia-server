@@ -32,8 +32,8 @@ go run ./cmd/api
 
 ## Local PostgreSQL via Docker
 
-Повний beginner-friendly гайд також є тут:
-`F:\mafia-project\docs\local_postgres_for_newbies.md`
+Повний beginner-friendly гайд також є тут (у docs батьківського проєкту):
+`../docs/local_postgres_for_newbies.md`
 
 ### Простими словами (для новачка)
 
@@ -219,6 +219,13 @@ Quick reference:
 
 **Phase flow:** night → day → voting → (repeat or final)
 
+**Introductory first round (round 1):** the game opens with an acquaintance round.
+On the intro night, roles wake in the usual order but every night action is rejected
+(`409`) and nobody is killed — the mafia only learn who their teammates are. The intro
+day runs speeches and discussion but has **no exile vote**; after `day_discussion` the
+server goes straight into the first full night of round 2. Real night actions and voting
+take effect from round 2 onward.
+
 `GET /api/games/{roomId}` returns a private view for the authenticated player:
 
 - every player sees their own role
@@ -301,11 +308,12 @@ Allowed action flow:
   - `mafia_kill` by mafia
 - `voting`:
   - `vote` by alive players
+- All night actions are rejected during the introductory round 1 (no actions, no kill).
 
 Phase resolution:
 
-- Leaving `night` resolves mistress block, doctor heal and mafia shots.
-- Leaving `voting` resolves exile by vote majority.
+- Leaving `night` resolves mistress block, doctor heal and mafia shots (skipped on the intro round 1).
+- Leaving `voting` resolves exile by vote majority (no exile on the intro round 1).
 - Mafia kill succeeds only when all alive unblocked ordinary mafia choose the same target (one unblocked mafia is enough).
 - If all mafia-side players are dead, the game moves to `final`.
 - If mafia-side count is at least the alive town count, the game moves to `final`.
