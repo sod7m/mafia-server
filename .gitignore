@@ -1,8 +1,18 @@
+# Build output
+*.exe
 .bin/
+
+# Go caches / telemetry / temp
 .gocache/
 .gotelemetry/
 .gotmp/
-api.exe
+.tmptest/
+
+# Logs
+.logs/
+*.log
+
+# Local environment (keep the example)
 .env
 .env.*
 !.env.example

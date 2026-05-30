@@ -298,6 +298,10 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 	if isPhaseExpired(game, now) {
 		return domain.Game{}, ErrActionUnavailable
 	}
+	if isIntroRound(game) && isNightRoleAction(actionType) {
+		// Перша ніч ознайомча — нічних ходів немає.
+		return domain.Game{}, ErrActionUnavailable
+	}
 	if isNightRoleAction(actionType) && isBlockedThisRound(game, actor.ID) {
 		return domain.Game{}, ErrActionUnavailable
 	}
@@ -395,7 +399,21 @@ func advanceStep(game *domain.Game, now time.Time, reason string) {
 		advanceDaySpeech(game, now)
 		advanced = true
 	case domain.GameStepDayDiscussion:
-		setStepWindow(game, domain.GameStepVoting, now)
+		if isIntroRound(*game) {
+			// Ознайомчий день завершено — голосування немає, одразу
+			// починається перша повноцінна ніч (раунд 2).
+			game.Events = append(game.Events, newGameEvent(
+				"day.intro.resolved",
+				"Ознайомчий день завершено. Голосування немає — починається перша повноцінна ніч.",
+				game.Phase,
+				game.Round,
+				"",
+				"",
+			))
+			startNight(game, now, true)
+		} else {
+			setStepWindow(game, domain.GameStepVoting, now)
+		}
 		advanced = true
 	case domain.GameStepVoting:
 		resolveVoting(game)
@@ -800,6 +818,20 @@ func actionRecordedMessage(actionType domain.GameActionType, actorNickname strin
 }
 
 func resolveNight(game *domain.Game) {
+	if isIntroRound(*game) {
+		// Перша ніч — ознайомча: ролі лише прокидаються по черзі, щоб
+		// мафія познайомилась між собою. Жодних дій і вбивств не відбувається.
+		game.Events = append(game.Events, newGameEvent(
+			"night.intro.resolved",
+			"Перша ніч — ознайомча. Мафія знайомиться між собою, вбивств немає.",
+			game.Phase,
+			game.Round,
+			"",
+			"",
+		))
+		return
+	}
+
 	actions := actionsForCurrentPhase(*game)
 	healedTargets := make(map[string]struct{})
 	for _, action := range actions {
@@ -886,6 +918,11 @@ func mafiaTarget(game domain.Game) (string, bool) {
 }
 
 func resolveVoting(game *domain.Game) {
+	if isIntroRound(*game) {
+		// Ознайомчий перший день не має голосування на вигнання.
+		return
+	}
+
 	actions := actionsForCurrentPhase(*game)
 	targetID, ok := topTarget(actions, domain.GameActionVote)
 	if !ok {
@@ -977,6 +1014,13 @@ func topTarget(actions []domain.GameAction, actionType domain.GameActionType) (s
 	}
 
 	return ranked[0].targetID, true
+}
+
+// isIntroRound reports whether the game is in the introductory first round,
+// where roles only wake to get acquainted: no night actions, no kill, and the
+// first day has no exile vote. The first full round of play is round 2.
+func isIntroRound(game domain.Game) bool {
+	return game.Round <= 1
 }
 
 func maybeFinishGame(game *domain.Game) bool {

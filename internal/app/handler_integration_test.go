@@ -168,6 +168,21 @@ func setupStartedRoom(t *testing.T, api *testAPI, playerCount int) (string, []te
 	return roomID, players
 }
 
+// advanceToRealRound drives the game past the introductory round 1 (acquaintance
+// night + acquaintance day) via the owner's next-phase control, landing on
+// round 2's first night step where night actions and votes take effect.
+func advanceToRealRound(t *testing.T, api *testAPI, roomID string, ownerToken string) {
+	t.Helper()
+	for range 60 {
+		if getGameFor(t, api, ownerToken, roomID).Round >= 2 {
+			return
+		}
+		status, body := api.post("/api/games/"+roomID+"/next-phase", ownerToken, nil)
+		mustStatus(t, status, http.StatusOK, body)
+	}
+	t.Fatalf("did not reach round 2 within step budget")
+}
+
 func getGameFor(t *testing.T, api *testAPI, token string, roomID string) domain.Game {
 	t.Helper()
 
@@ -233,6 +248,8 @@ func TestBlockedPlayerCanStillVoteViaAPI(t *testing.T) {
 	mistress := getPlayerByRole(t, api, roomID, players, domain.GameRoleMistress)
 	voteTarget := findOtherPlayer(players, owner.ID, doctor.ID, mistress.ID)
 
+	advanceToRealRound(t, api, roomID, owner.Token)
+
 	blockStatus, blockBody := api.post("/api/games/"+roomID+"/actions", mistress.Token, map[string]any{
 		"type":     "mistress_block",
 		"targetId": doctor.ID,
@@ -256,6 +273,8 @@ func TestSingleMafiaCanKillViaAPI(t *testing.T) {
 	owner := players[0]
 	mafia := getPlayerByRole(t, api, roomID, players, domain.GameRoleMafia)
 	target := findOtherPlayer(players, owner.ID, mafia.ID)
+
+	advanceToRealRound(t, api, roomID, owner.Token)
 
 	// 6-player game has no Mistress: doctor → commissioner → mafia (2 advances)
 	for range 2 {
@@ -296,6 +315,8 @@ func TestMafiaCanSelfTargetViaAPI(t *testing.T) {
 	}
 	mafiaOne := mafias[0]
 	mafiaTwo := mafias[1]
+
+	advanceToRealRound(t, api, roomID, owner.Token)
 
 	// 8-player game has no Mistress: doctor → commissioner → mafia (2 advances)
 	for range 2 {
@@ -340,6 +361,8 @@ func TestMistressBlockPreventsDoctorHeal(t *testing.T) {
 	mistress := getPlayerByRole(t, api, roomID, players, domain.GameRoleMistress)
 	target := findOtherPlayer(players, owner.ID, doctor.ID, mistress.ID)
 
+	advanceToRealRound(t, api, roomID, owner.Token)
+
 	blockStatus, blockBody := api.post("/api/games/"+roomID+"/actions", mistress.Token, map[string]any{
 		"type":     "mistress_block",
 		"targetId": doctor.ID,
@@ -371,6 +394,8 @@ func TestVotingResolvesExile(t *testing.T) {
 	roomID, players := setupStartedRoom(t, api, 7)
 
 	owner := players[0]
+	advanceToRealRound(t, api, roomID, owner.Token)
+
 	setVotingStatus, setVotingBody := api.post("/api/games/"+roomID+"/phase", owner.Token, map[string]string{"phase": "voting"})
 	mustStatus(t, setVotingStatus, http.StatusOK, setVotingBody)
 

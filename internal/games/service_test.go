@@ -69,6 +69,28 @@ func findPlayer(t *testing.T, game domain.Game, playerID string) domain.GamePlay
 	return domain.GamePlayer{}
 }
 
+// advancePastIntro fast-forwards through the introductory round 1 (acquaintance
+// night + acquaintance day) so the game sits at the first night step of round 2,
+// where night actions and kills take effect.
+func advancePastIntro(t *testing.T, service *Service, roomID string) domain.Game {
+	t.Helper()
+	game, ok := service.GetByRoomID(roomID)
+	if !ok {
+		t.Fatalf("game for room %q not found", roomID)
+	}
+	for game.Round < 2 {
+		var err error
+		game, err = service.AdvancePhase(roomID)
+		if err != nil {
+			t.Fatalf("advance past intro round: %v", err)
+		}
+		if game.Step == domain.GameStepFinal {
+			t.Fatalf("game reached final during intro round")
+		}
+	}
+	return game
+}
+
 func advanceToStep(t *testing.T, service *Service, roomID string, step domain.GameStep) domain.Game {
 	t.Helper()
 	game, ok := service.GetByRoomID(roomID)
@@ -273,8 +295,9 @@ func TestMistressBlocksDoctorAction(t *testing.T) {
 	service := newTestService()
 	room := testRoom(11) // user-5 = Mistress, user-2 = Doctor
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 
-	// Game starts at night_mistress; user-5 blocks user-2 (Doctor)
+	// Round 2 night_mistress; user-5 blocks user-2 (Doctor)
 	if _, err := service.SubmitAction(room.ID, "user-5", domain.GameActionBlock, "user-2"); err != nil {
 		t.Fatalf("block returned error: %v", err)
 	}
@@ -289,6 +312,7 @@ func TestBlockedPlayerCanStillVote(t *testing.T) {
 	service := newTestService()
 	room := testRoom(11) // user-5 = Mistress, user-2 = Doctor
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 
 	if _, err := service.SubmitAction(room.ID, "user-5", domain.GameActionBlock, "user-2"); err != nil {
 		t.Fatalf("block returned error: %v", err)
@@ -306,6 +330,7 @@ func TestMistressCannotBlockSameTargetConsecutiveNights(t *testing.T) {
 	service := newTestService()
 	room := testRoom(11) // user-5 = Mistress
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 
 	if _, err := service.SubmitAction(room.ID, "user-5", domain.GameActionBlock, "user-1"); err != nil {
 		t.Fatalf("first block returned error: %v", err)
@@ -325,7 +350,7 @@ func TestDoctorCannotHealSameTargetConsecutiveNights(t *testing.T) {
 	service := newTestService()
 	room := testRoom(7) // user-2 = Doctor
 	service.StartGame(room)
-	// Game starts at night_doctor — no advance needed.
+	advancePastIntro(t, service, room.ID) // round 2 starts at night_doctor
 
 	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionHeal, "user-4"); err != nil {
 		t.Fatalf("first heal returned error: %v", err)
@@ -333,7 +358,7 @@ func TestDoctorCannotHealSameTargetConsecutiveNights(t *testing.T) {
 	_, _ = service.SetPhase(room.ID, domain.GamePhaseDay)
 	_, _ = service.SetPhase(room.ID, domain.GamePhaseVoting)
 	_, _ = service.SetPhase(room.ID, domain.GamePhaseNight)
-	// Round 2, still at night_doctor.
+	// Next night, still at night_doctor.
 
 	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionHeal, "user-4"); err != ErrActionUnavailable {
 		t.Fatalf("expected repeated heal target to be unavailable, got %v", err)
@@ -346,6 +371,7 @@ func TestCommissionerSeesSideOnlyAndMistressCountsAsMafia(t *testing.T) {
 	service := newTestService()
 	room := testRoom(11) // user-1 = Commissioner, user-5 = Mistress
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 	advanceToStep(t, service, room.ID, domain.GameStepNightCommissioner)
 
 	game, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-5")
@@ -375,6 +401,7 @@ func TestCommissionerCannotInspectSameTargetTwice(t *testing.T) {
 	service := newTestService()
 	room := testRoom(7) // user-1 = Commissioner
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 	advanceToStep(t, service, room.ID, domain.GameStepNightCommissioner)
 
 	if _, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-2"); err != nil {
@@ -396,6 +423,7 @@ func TestMafiaNeedsAllUnblockedMafiaToShootSameTarget(t *testing.T) {
 	service := newTestService()
 	room := testRoom(8) // user-3 = Mafia, user-4 = Mafia
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
 
 	// Only one of two mafia shoots — target must survive.
@@ -415,6 +443,7 @@ func TestSingleMafiaCanKill(t *testing.T) {
 	service := newTestService()
 	room := testRoom(6) // user-3 = sole Mafia
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
 
 	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionMafiaKill, "user-5"); err != nil {
@@ -433,6 +462,7 @@ func TestMafiaCanTargetSelf(t *testing.T) {
 	service := newTestService()
 	room := testRoom(8) // user-3 = Mafia, user-4 = Mafia
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
 
 	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionMafiaKill, "user-3"); err != nil {
@@ -454,7 +484,7 @@ func TestMafiaSameTargetKillsUnlessDoctorHeals(t *testing.T) {
 	service := newTestService()
 	room := testRoom(8) // user-2 = Doctor, user-3 = Mafia, user-4 = Mafia
 	service.StartGame(room)
-	// Game starts at night_doctor.
+	advancePastIntro(t, service, room.ID) // round 2 starts at night_doctor
 	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionHeal, "user-5"); err != nil {
 		t.Fatalf("heal returned error: %v", err)
 	}
@@ -479,6 +509,7 @@ func TestMafiaDifferentTargetsMiss(t *testing.T) {
 	service := newTestService()
 	room := testRoom(8) // user-3 = Mafia, user-4 = Mafia
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 	advanceToStep(t, service, room.ID, domain.GameStepNightMafia)
 
 	if _, err := service.SubmitAction(room.ID, "user-3", domain.GameActionMafiaKill, "user-5"); err != nil {
@@ -502,6 +533,7 @@ func TestVotingResolvesExileAndTieSkipsExile(t *testing.T) {
 	service := newTestService()
 	room := testRoom(7)
 	service.StartGame(room)
+	advancePastIntro(t, service, room.ID)
 	if _, err := service.SetPhase(room.ID, domain.GamePhaseVoting); err != nil {
 		t.Fatalf("SetPhase voting returned error: %v", err)
 	}
