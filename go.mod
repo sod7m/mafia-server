@@ -2,6 +2,8 @@ module mafia-server
 
 go 1.24.0
 
+// +heroku install ./cmd/api
+
 require (
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/swaggo/swag v1.8.1
