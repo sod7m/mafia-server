@@ -1,0 +1,21 @@
+# VCS / CI
+.git
+.github
+
+# Local build output & caches
+*.exe
+.bin/
+.gocache/
+.gotelemetry/
+.gotmp/
+.tmptest/
+
+# Logs & local env
+.logs/
+*.log
+.env
+.env.*
+!.env.example
+
+# Docs not needed in the image
+docs/swagger.yaml
