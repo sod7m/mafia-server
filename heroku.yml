@@ -1,0 +1,8 @@
+# Tells Heroku to build the backend from our Dockerfile (built remotely on
+# Heroku — no local Docker needed) and run it as the web process. Heroku injects
+# $PORT, which main.go honors.
+build:
+  docker:
+    web: Dockerfile
+run:
+  web: /app/api

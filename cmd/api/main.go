@@ -28,7 +28,16 @@ import (
 )
 
 func main() {
-	addr := getenv("HTTP_ADDR", ":8080")
+	// PaaS platforms (Heroku, etc.) inject the listen port via $PORT.
+	// Explicit HTTP_ADDR wins, then $PORT, then a local default.
+	addr := getenv("HTTP_ADDR", "")
+	if addr == "" {
+		if port := strings.TrimSpace(os.Getenv("PORT")); port != "" {
+			addr = ":" + port
+		} else {
+			addr = ":8080"
+		}
+	}
 	databaseURL := strings.TrimSpace(getenv("DATABASE_URL", ""))
 	corsAllowedOrigins := splitCSV(getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"))
 	wsAllowedOrigins := splitCSV(getenv("WS_ALLOWED_ORIGINS", "localhost:5173,127.0.0.1:5173"))
