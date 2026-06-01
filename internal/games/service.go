@@ -17,13 +17,17 @@ import (
 )
 
 var (
-	ErrGameNotFound      = errors.New("game not found")
-	ErrInvalidPhase      = errors.New("invalid game phase")
-	ErrInvalidAction     = errors.New("invalid game action")
-	ErrActionUnavailable = errors.New("action is unavailable in the current phase")
-	ErrPlayerNotFound    = errors.New("player not found")
-	ErrPlayerDead        = errors.New("player is not alive")
-	ErrTargetDead        = errors.New("target is not alive")
+	ErrGameNotFound      = errors.New("Гру не знайдено.")
+	ErrInvalidPhase      = errors.New("Недоступна фаза гри.")
+	ErrInvalidAction     = errors.New("Невідома дія.")
+	ErrActionUnavailable = errors.New("Цю дію зараз виконати не можна.")
+	ErrPlayerNotFound    = errors.New("Гравця не знайдено.")
+	ErrPlayerDead        = errors.New("Вибулі гравці не можуть діяти чи голосувати.")
+	ErrTargetDead        = errors.New("Цього гравця вже немає в грі.")
+	ErrActionBlocked     = errors.New("Вашу нічну дію цієї ночі заблоковано.")
+	ErrRepeatHeal        = errors.New("Не можна лікувати одного й того самого гравця дві ночі поспіль.")
+	ErrRepeatBlock       = errors.New("Не можна блокувати одного й того самого гравця дві ночі поспіль.")
+	ErrRepeatInspect     = errors.New("Комісар уже перевіряв цього гравця раніше.")
 )
 
 var validPhases = []domain.GamePhase{
@@ -99,6 +103,7 @@ type Service struct {
 	byRoom   map[string]domain.Game
 	store    persistence.Store
 	rolePerm func(int) []int // injectable for tests; defaults to cryptoRandPerm
+	seatPerm func(int) []int // randomizes seating order; injectable for tests
 }
 
 func NewService() *Service {
@@ -114,6 +119,7 @@ func NewServiceWithStore(store persistence.Store) *Service {
 		byRoom:   make(map[string]domain.Game),
 		store:    store,
 		rolePerm: cryptoRandPerm,
+		seatPerm: cryptoRandPerm,
 	}
 
 	var loaded map[string]domain.Game
@@ -303,7 +309,7 @@ func (s *Service) SubmitAction(roomID string, actorID string, actionType domain.
 		return domain.Game{}, ErrActionUnavailable
 	}
 	if isNightRoleAction(actionType) && isBlockedThisRound(game, actor.ID) {
-		return domain.Game{}, ErrActionUnavailable
+		return domain.Game{}, ErrActionBlocked
 	}
 	if err := validateAction(game, actor, target, actionType); err != nil {
 		return domain.Game{}, err
@@ -635,10 +641,10 @@ func formatTime(value time.Time) string {
 func (s *Service) playersFromRoom(room domain.Room) []domain.GamePlayer {
 	roles := rolesForCount(len(room.Players))
 	perm := s.rolePerm(len(room.Players))
-	players := make([]domain.GamePlayer, 0, len(room.Players))
+	ordered := make([]domain.GamePlayer, 0, len(room.Players))
 	for i, player := range room.Players {
 		role := roles[perm[i]]
-		players = append(players, domain.GamePlayer{
+		ordered = append(ordered, domain.GamePlayer{
 			ID:       player.ID,
 			Nickname: player.Nickname,
 			IsOwner:  player.IsOwner,
@@ -646,6 +652,14 @@ func (s *Service) playersFromRoom(room domain.Room) []domain.GamePlayer {
 			Side:     sideForRole(role),
 			IsAlive:  true,
 		})
+	}
+
+	// Randomize seating so the join order does not determine board position
+	// (otherwise players could pick a convenient seat by timing their join).
+	seats := s.seatPerm(len(ordered))
+	players := make([]domain.GamePlayer, len(ordered))
+	for newPos, oldPos := range seats {
+		players[newPos] = ordered[oldPos]
 	}
 
 	return players
@@ -752,13 +766,17 @@ func isNightRoleAction(actionType domain.GameActionType) bool {
 
 func validateTargetHistory(game domain.Game, actorID string, actionType domain.GameActionType, targetID string) error {
 	switch actionType {
-	case domain.GameActionBlock, domain.GameActionHeal:
+	case domain.GameActionHeal:
 		if previousRoundTarget(game.Actions, actorID, actionType, game.Round) == targetID {
-			return ErrActionUnavailable
+			return ErrRepeatHeal
+		}
+	case domain.GameActionBlock:
+		if previousRoundTarget(game.Actions, actorID, actionType, game.Round) == targetID {
+			return ErrRepeatBlock
 		}
 	case domain.GameActionInspect:
 		if hasPriorInspectTarget(game.Actions, actorID, targetID, game.Round) {
-			return ErrActionUnavailable
+			return ErrRepeatInspect
 		}
 	}
 
