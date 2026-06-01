@@ -713,6 +713,14 @@ func (h *Handler) writeGameError(w http.ResponseWriter, err error) {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, games.ErrActionUnavailable):
 		httpx.WriteError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, games.ErrActionBlocked):
+		httpx.WriteError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, games.ErrRepeatHeal):
+		httpx.WriteError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, games.ErrRepeatBlock):
+		httpx.WriteError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, games.ErrRepeatInspect):
+		httpx.WriteError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, games.ErrPlayerNotFound):
 		httpx.WriteError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, games.ErrPlayerDead):

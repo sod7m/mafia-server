@@ -21,6 +21,7 @@ func identityPerm(n int) []int {
 func newTestService() *Service {
 	s := NewService()
 	s.rolePerm = identityPerm
+	s.seatPerm = identityPerm
 	return s
 }
 
@@ -303,7 +304,7 @@ func TestMistressBlocksDoctorAction(t *testing.T) {
 	}
 	advanceToStep(t, service, room.ID, domain.GameStepNightDoctor)
 
-	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionHeal, "user-6"); err != ErrActionUnavailable {
+	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionHeal, "user-6"); err != ErrActionBlocked {
 		t.Fatalf("expected blocked doctor action to be unavailable, got %v", err)
 	}
 }
@@ -339,7 +340,7 @@ func TestMistressCannotBlockSameTargetConsecutiveNights(t *testing.T) {
 	_, _ = service.SetPhase(room.ID, domain.GamePhaseVoting)
 	_, _ = service.SetPhase(room.ID, domain.GamePhaseNight)
 
-	if _, err := service.SubmitAction(room.ID, "user-5", domain.GameActionBlock, "user-1"); err != ErrActionUnavailable {
+	if _, err := service.SubmitAction(room.ID, "user-5", domain.GameActionBlock, "user-1"); err != ErrRepeatBlock {
 		t.Fatalf("expected repeated block target to be unavailable, got %v", err)
 	}
 }
@@ -360,7 +361,7 @@ func TestDoctorCannotHealSameTargetConsecutiveNights(t *testing.T) {
 	_, _ = service.SetPhase(room.ID, domain.GamePhaseNight)
 	// Next night, still at night_doctor.
 
-	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionHeal, "user-4"); err != ErrActionUnavailable {
+	if _, err := service.SubmitAction(room.ID, "user-2", domain.GameActionHeal, "user-4"); err != ErrRepeatHeal {
 		t.Fatalf("expected repeated heal target to be unavailable, got %v", err)
 	}
 }
@@ -412,7 +413,7 @@ func TestCommissionerCannotInspectSameTargetTwice(t *testing.T) {
 	_, _ = service.SetPhase(room.ID, domain.GamePhaseNight)
 	advanceToStep(t, service, room.ID, domain.GameStepNightCommissioner)
 
-	if _, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-2"); err != ErrActionUnavailable {
+	if _, err := service.SubmitAction(room.ID, "user-1", domain.GameActionInspect, "user-2"); err != ErrRepeatInspect {
 		t.Fatalf("expected repeated inspect target to be unavailable, got %v", err)
 	}
 }

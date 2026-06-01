@@ -30,6 +30,8 @@ func WithCORSOrigins(next http.Handler, allowedOrigins []string) http.Handler {
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
+		// Expose Date so the browser can read the server clock and sync phase timers.
+		w.Header().Set("Access-Control-Expose-Headers", "Date")
 		w.Header().Set("Access-Control-Max-Age", "600")
 
 		if r.Method == http.MethodOptions {
