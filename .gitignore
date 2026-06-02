@@ -11,6 +11,13 @@
 # Logs
 .logs/
 *.log
+.server.*.log
+
+# Editor/tool backup & temp files (e.g. accidental "service.go.123456789")
+*.go.[0-9]*
+*.orig
+*.bak
+*~
 
 # Local environment (keep the example)
 .env
