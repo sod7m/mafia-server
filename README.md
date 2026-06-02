@@ -1,332 +1,402 @@
 # Mafia Server
 
-Backend API for the Mafia game.
+Бекенд онлайн-гри **«Мафія»** — HTTP API + WebSocket на Go. Сервер є **єдиним
+джерелом істини** для всього стану гри: він роздає ролі, веде фази, перевіряє
+дії, ховає таємниці ролей і розсилає оновлення клієнтам у реальному часі.
 
-Current state:
-1. Go HTTP server.
-2. Nickname sessions with optional PostgreSQL persistence.
-3. Rooms with optional PostgreSQL persistence.
-4. HTTP API for lobby/room flow.
-5. WebSocket broadcast for room updates.
-6. Game snapshot created on room start, with optional PostgreSQL persistence.
-7. Server-side game step switching for night roles, day speeches, discussion and voting.
-8. Owner-only room start and owner-only phase controls.
-9. Server-side dev game actions for night moves and voting.
-10. Per-player private game snapshots for roles, private actions and inspect results.
-11. Server step timer with fixed order and automatic step advancement.
-12. Environment-driven CORS/WS allowlists and rate limits for login/room mutations.
-13. Recovery endpoint for reconnect/reload (`GET /api/recovery`).
+Працює в парі з веб-клієнтом [`mafia-client`](../mafia-client).
 
-Not implemented yet:
-1. LiveKit voice/video token endpoint.
+> Дипломний проєкт. Стек: Go 1.24, стандартна бібліотека `net/http`,
+> `nhooyr.io/websocket`, опційно PostgreSQL (`pgx`).
 
-## Requirements
+---
 
-- Go 1.24+
+## Зміст
 
-## Run
+- [Можливості](#можливості)
+- [Архітектура](#архітектура)
+- [Технології](#технології)
+- [Швидкий старт](#швидкий-старт)
+- [Конфігурація (змінні середовища)](#конфігурація-змінні-середовища)
+- [PostgreSQL (опційно)](#postgresql-опційно)
+- [Запуск тестів](#запуск-тестів)
+- [API](#api)
+- [Правила гри](#правила-гри)
+- [Захист і надійність](#захист-і-надійність)
+- [Голос і відео (LiveKit)](#голос-і-відео-livekit)
+- [Деплой](#деплой)
+- [Swagger / документація API](#swagger--документація-api)
+
+---
+
+## Можливості
+
+- **Сесії за nickname** без пароля (гостьовий вхід), токен живе 24 години.
+- **Лобі та кімнати**: створення, приєднання, вихід, старт гри власником.
+- **Повний ігровий рушій «Мафія»**: ролі, нічні дії, денні промови, обговорення,
+  голосування на вигнання, останнє слово, визначення переможця.
+- **Ознайомчий перший раунд** (знайомство без вбивств і голосування).
+- **Приватні в'юхи стану**: кожен гравець бачить лише те, що має бачити (анти-чит).
+- **Realtime через WebSocket**: миттєві оновлення кімнат і гри.
+- **Серверний таймер фаз** із фіксованим порядком і автопереходами.
+- **Токени для голосового/відеочату** (LiveKit) генеруються на сервері.
+- **Захист**: rate limiting (анти-брутфорс), CORS/WS allowlist, авто-прибирання
+  покинутих ігор.
+- **Опційна персистентність** у PostgreSQL з авто-міграціями (без БД — усе в пам'яті).
+
+---
+
+## Архітектура
+
+Чистий поділ на шари — кожен пакет відповідає за одну річ:
+
+```
+mafia-server/
+├── cmd/api/                 # Точка входу: читає env, піднімає HTTP-сервер, graceful shutdown
+├── internal/
+│   ├── app/                 # HTTP-хендлери, маршрути, middleware, presence-двірник
+│   │   ├── handler.go       #   роутинг + усі обробники запитів
+│   │   ├── voice.go         #   видача LiveKit-токенів (JWT)
+│   │   └── presence.go      #   трекер присутності + автоприбирання покинутих ігор
+│   ├── auth/                # Сесії за nickname (логін, токени, TTL)
+│   ├── rooms/               # Лобі та кімнати (створення, join/leave, власник)
+│   ├── games/               # Ігровий рушій: ролі, фази, дії, перемога (ядро логіки)
+│   ├── realtime/            # WebSocket-хаб (broadcast подій)
+│   ├── persistence/         # Інтерфейс Store: Noop (in-memory) + PostgreSQL + міграції
+│   ├── httpx/               # CORS, rate limiter, JSON-хелпери
+│   ├── domain/              # Спільні типи (Room, Game, Player, ролі, фази…)
+│   └── ids/                 # Генерація ID та токенів
+└── docker-compose.yml       # Локальний PostgreSQL у Docker
+```
+
+**Потік запиту:** `cmd/api` → CORS middleware → роутер (`app/handler.go`) →
+сервіс (`auth`/`rooms`/`games`) → за потреби `persistence.Store` → відповідь JSON,
+а зміни стану розсилаються через `realtime.Hub` усім підключеним клієнтам.
+
+---
+
+## Технології
+
+| Призначення | Технологія |
+|---|---|
+| Мова | Go 1.24 |
+| HTTP | стандартна бібліотека `net/http` (роутер `http.ServeMux` з методами/патернами) |
+| WebSocket | `nhooyr.io/websocket` |
+| База даних (опційно) | PostgreSQL через `jackc/pgx/v5` |
+| Голос/відео токени | HS256 JWT, зібраний вручну стандартною бібліотекою (без важкого LiveKit SDK) |
+| Документація API | Swagger UI (`swaggo/swag`) |
+| CI | GitHub Actions (`go test -race ./...`) |
+
+---
+
+## Швидкий старт
+
+**Вимоги:** Go **1.24+**. База даних не потрібна — за замовчуванням сервер працює
+повністю в пам'яті.
 
 ```bash
+# 1. Клонувати репозиторій
+git clone https://github.com/sod7m/mafia-server.git
+cd mafia-server
+
+# 2. Запустити сервер (in-memory режим)
 go run ./cmd/api
 ```
 
-## Local PostgreSQL via Docker
+Сервер підніметься на `http://localhost:8080`.
 
-Повний beginner-friendly гайд також є тут (у docs батьківського проєкту):
-`../docs/local_postgres_for_newbies.md`
+Швидка перевірка, що він живий:
 
-### Простими словами (для новачка)
-
-1. У грі **немає реєстрації акаунта з паролем**.  
-   Користувач просто вводить nickname і отримує токен сесії (`/api/auth/login`).
-2. `POSTGRES_PASSWORD` — це **пароль до бази даних PostgreSQL**, а не пароль гравця.
-3. `.env` — локальний файл з налаштуваннями/секретами для твого ПК.  
-   Його не треба комітити в git (він уже в `.gitignore`).
-4. `DATABASE_URL` — це рядок підключення до БД.  
-   Якщо він заданий, сервер зберігає стан у PostgreSQL.  
-   Якщо порожній — сервер працює як раніше, повністю in-memory.
-
-### Швидкий старт (Windows + Docker) — копіюй по кроках
-
-1. Створи локальний `.env` з шаблону:
-
-```powershell
-Copy-Item .env.example .env
+```bash
+curl http://localhost:8080/healthz
+# {"status":"ok"}
 ```
 
-2. Відкрий `.\.env` і зміни тільки пароль БД, наприклад:
-
-```env
-POSTGRES_PASSWORD=my_strong_local_password_123
-```
-
-3. Підніми PostgreSQL у Docker:
-
-```powershell
-docker compose up -d postgres
-```
-
-4. Завантаж змінні з `.env` у поточний PowerShell:
-
-```powershell
-Get-Content .env | Where-Object { $_ -notmatch '^\s*#' -and $_ -notmatch '^\s*$' } | ForEach-Object {
-  $parts = $_ -split '=', 2
-  if ($parts.Length -eq 2) { Set-Item -Path ("Env:" + $parts[0]) -Value $parts[1] }
-}
-```
-
-5. Запусти backend:
-
-```powershell
-go run ./cmd/api
-```
-
-6. Зупинити PostgreSQL пізніше:
-
-```powershell
-docker compose down
-```
-
-`DATABASE_URL` вмикає збереження стану в нормалізованих PostgreSQL таблицях (`users`, `sessions`, `rooms`, `room_players`, `games`, `game_players`, `game_actions`, `game_events`) з авто-міграціями.  
-Без `DATABASE_URL` сервер працює в old-school in-memory режимі.
-
-### Що саме зберігається в PostgreSQL зараз
-
-1. Сесії (`auth`)
-2. Кімнати (`rooms`)
-3. Ігрові стани (`games`)
-
-Дані зберігаються у нормалізованій схемі + міграціях, без JSON snapshot-таблиці як основного формату.
-
-### Security env (важливо)
-
-У `.env` тепер є додаткові параметри безпеки:
-
-1. `CORS_ALLOWED_ORIGINS` — дозволені Origin для HTTP API (через кому).
-2. `WS_ALLOWED_ORIGINS` — allowlist для WebSocket OriginPatterns (через кому).
-3. `RATE_LIMIT_LOGIN_PER_MINUTE` — ліміт запитів на `POST /api/auth/login`.
-4. `RATE_LIMIT_ROOM_MUTATION_PER_MINUTE` — ліміт запитів на `POST /api/rooms*`.
-
-Default address:
-
-```text
-http://localhost:8080
-```
-
-You can override it:
+Змінити порт:
 
 ```bash
 HTTP_ADDR=:8081 go run ./cmd/api
 ```
 
-On Windows PowerShell:
-
 ```powershell
-$env:HTTP_ADDR=":8081"
-$env:GOTELEMETRY="off"
-go run ./cmd/api
+# Windows PowerShell
+$env:HTTP_ADDR=":8081"; go run ./cmd/api
 ```
 
-## API Documentation (Swagger UI)
+---
 
-**Interactive API documentation available at:**
+## Конфігурація (змінні середовища)
 
-```
-http://localhost:8080/api/docs
-```
+Усі налаштування — через env. Локально зручно тримати їх у файлі `.env`
+(є шаблон `.env.example`; сам `.env` у git не комітиться).
 
-All endpoints fully documented with:
-- Request/response examples
-- Parameter descriptions
-- Error codes
-- Authentication requirements
-- Try-it-out functionality (test requests directly in browser)
+| Змінна | За замовчуванням | Призначення |
+|---|---|---|
+| `HTTP_ADDR` | `:8080` | Адреса, на якій слухає сервер. На хостингу часто задається через `$PORT`. |
+| `DATABASE_URL` | *(порожньо)* | Рядок підключення до PostgreSQL. Якщо порожній — режим in-memory. |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Дозволені Origin для HTTP API (через кому). `*` — дозволити всі. |
+| `WS_ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Allowlist Origin для WebSocket-з'єднань. |
+| `RATE_LIMIT_LOGIN_PER_MINUTE` | `30` | Ліміт запитів логіну на хвилину (анти-брутфорс). |
+| `RATE_LIMIT_ROOM_MUTATION_PER_MINUTE` | `60` | Ліміт мутацій кімнат (create/join/leave/start) на хвилину. |
+| `LIVEKIT_URL` | *(порожньо)* | URL сервера LiveKit (`wss://…`). Без нього голос/відео вимкнено. |
+| `LIVEKIT_API_KEY` | *(порожньо)* | API key LiveKit для підпису токенів. |
+| `LIVEKIT_API_SECRET` | *(порожньо)* | API secret LiveKit. |
 
-Local Windows Application Control can block freshly built `.exe` files in this workspace. If that happens, use the devserver test runner:
+---
 
-```powershell
-$env:HTTP_ADDR="127.0.0.1:8080"
-$env:GOTELEMETRY="off"
-$env:GOTELEMETRYDIR="F:\mafia-project\mafia-server\.gotelemetry"
-$env:GOCACHE="F:\mafia-project\mafia-server\.gocache"
-$env:GOTMPDIR="F:\mafia-project\mafia-server\.gotmp"
-go test -tags devserver -run TestDevServer -timeout 0 ./cmd/api
-```
+## PostgreSQL (опційно)
 
-This runner is only included when the `devserver` build tag is set.
+> **Важливо:** реєстрації з паролем у грі немає — вхід лише за nickname.
+> `POSTGRES_PASSWORD` — це пароль до **бази даних**, а не до акаунта гравця.
 
-## Smoke Test
+Без `DATABASE_URL` сервер працює in-memory (стан зникає при перезапуску). Щоб
+увімкнути збереження стану між перезапусками, підніми PostgreSQL і задай
+`DATABASE_URL`.
 
-Health:
+**Локально через Docker:**
 
 ```bash
-curl http://localhost:8080/healthz
+# 1. Створити .env із шаблону і за бажанням змінити POSTGRES_PASSWORD
+cp .env.example .env
+
+# 2. Підняти PostgreSQL
+docker compose up -d postgres
+
+# 3. Запустити сервер із підключенням до БД
+DATABASE_URL="postgres://mafia_app:change_me_local_only@127.0.0.1:5432/mafia?sslmode=disable" \
+  go run ./cmd/api
+
+# 4. Зупинити БД пізніше
+docker compose down
 ```
 
-Login:
+При старті з `DATABASE_URL` сервер **автоматично накатує міграції** і зберігає
+стан у нормалізованій схемі:
+
+```
+users, sessions, rooms, room_players,
+games, game_players, game_actions, game_events,
+schema_migrations, persistence_meta
+```
+
+Шар персистентності схований за інтерфейсом `Store` (`internal/persistence`):
+`NoopStore` (нічого не зберігає) або `PostgresStore`. Перемикання — лише
+наявністю `DATABASE_URL`, код гри від цього не залежить.
+
+---
+
+## Запуск тестів
+
+```bash
+# Усі тести
+go test ./...
+
+# З детектором гонок (як у CI)
+go test -race ./...
+
+# Конкретний пакет
+go test ./internal/games/...
+
+# Один тест докладно
+go test ./internal/app/ -run TestReaper -v
+```
+
+CI (GitHub Actions, `.github/workflows/ci.yml`) на кожен push ганяє
+`go test -race ./...`.
+
+---
+
+## API
+
+Базова автентифікація: після логіну клієнт шле токен у заголовку
+`Authorization: Bearer <token>`.
+
+### Auth
+| Метод | Шлях | Опис |
+|---|---|---|
+| `POST` | `/api/auth/login` | Створити/отримати користувача за nickname → `{ user, token }` |
+| `POST` | `/api/auth/logout` | Відкликати токен |
+| `GET` | `/api/me` | Поточний користувач |
+| `GET` | `/api/recovery` | Відновити кімнати/ігри після reload або reconnect |
+
+### Rooms
+| Метод | Шлях | Опис |
+|---|---|---|
+| `GET` | `/api/rooms` | Список доступних кімнат |
+| `POST` | `/api/rooms` | Створити кімнату |
+| `GET` | `/api/rooms/{roomId}` | Деталі кімнати |
+| `POST` | `/api/rooms/{roomId}/join` | Приєднатися |
+| `POST` | `/api/rooms/{roomId}/leave` | Вийти (порожня кімната + її гра видаляються) |
+| `POST` | `/api/rooms/{roomId}/start` | Старт гри (тільки власник, мін. 6 гравців) |
+
+### Games
+| Метод | Шлях | Опис |
+|---|---|---|
+| `GET` | `/api/games/{roomId}` | Персональний стан гри для гравця (приватна в'юха) |
+| `POST` | `/api/games/{roomId}/phase` | Встановити фазу (тільки власник) |
+| `POST` | `/api/games/{roomId}/next-phase` | Перейти до наступного кроку (тільки власник) |
+| `POST` | `/api/games/{roomId}/actions` | Надіслати нічну дію або голос |
+| `POST` | `/api/games/{roomId}/voice-token` | Отримати LiveKit-токен для голосу/відео |
+
+### Realtime
+| Метод | Шлях | Опис |
+|---|---|---|
+| `GET` | `/ws` | WebSocket. Сервер шле події: `rooms.updated`, `room.updated`, `room.deleted`, `game.updated` |
+
+> `game.updated` — це **сигнал рівня кімнати**, а не персональний payload. Отримавши
+> його, клієнт дочитує свою приватну в'юху через `GET /api/games/{roomId}`. Нічні
+> дії розсилаються «тихо» (без сигналу) — щоб за таймінгом не можна було вирахувати,
+> хто живий.
+
+**Приклад логіну:**
 
 ```bash
 curl -X POST http://localhost:8080/api/auth/login \
   -H "Content-Type: application/json" \
-  -d "{\"nickname\":\"DonVito\"}"
+  -d '{"nickname":"DonVito"}'
 ```
 
-List rooms:
+---
 
-```bash
-curl http://localhost:8080/api/rooms
-```
+## Правила гри
 
-Create room:
+### Ознайомчий перший раунд
 
-```bash
-curl -X POST http://localhost:8080/api/rooms \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <TOKEN>" \
-  -d "{\"name\":\"Night table\",\"maxPlayers\":10}"
-```
+Гра відкривається **раундом-знайомством**:
 
-## API Endpoints
+- **Ніч 1:** ролі прокидаються у звичному порядку, але всі нічні дії
+  відхиляються (`409`) — ніхто не гине. Мафія лише дізнається, хто свої.
+- **День 1:** промови та обговорення, але **без голосування на вигнання**.
+- З **раунду 2** працює повноцінна гра: дії, вбивства, голосування.
 
-**See full API documentation with examples and try-it-out at:**
+### Ролі та склад
+
+Ролі роздаються криптографічно випадковим перемішуванням (Fisher–Yates) залежно
+від кількості гравців:
+
+| Гравців | Мафія | Комісар | Лікар | Коханка | Мирні |
+|---|---|---|---|---|---|
+| 6–7 | 1 | 1 | 1 | — | 3–4 |
+| 8–10 | 2 | 1 | 1 | — | 4–6 |
+| 11–13 | 2 | 1 | 1 | 1 | 6–8 |
+| 14–16 | 3 | 1 | 1 | 1 | 8–10 |
+
+### Фази, кроки і таймери
+
+Ніч проходить по черзі за ролями, далі день і голосування:
+
+| Крок | Тривалість | Хто діє |
+|---|---|---|
+| `night_mistress` | 15 с | Коханка блокує гравця (`mistress_block`) |
+| `night_doctor` | 15 с | Лікар лікує (`heal`) |
+| `night_commissioner` | 15 с | Комісар перевіряє (`inspect`) |
+| `night_mafia` | 30 с | Мафія обирає жертву (`mafia_kill`) |
+| `day_speech` | 60 с на гравця | Промова кожного живого по черзі |
+| `day_discussion` | 90 с | Спільне обговорення |
+| `voting` | 35 с | Голосування на вигнання (`vote`) |
+| `day_last_word` | — | Останнє слово вигнаного перед вибуванням |
+| `final` | — | Гру завершено |
+
+- Якщо носій ролі загинув, його нічний крок усе одно «триває» весь таймер — щоб
+  за пропуском кроку не можна було здогадатися, що він мертвий.
+- Кроки переходять автоматично по таймеру; власник може прискорити через
+  `next-phase`.
+
+### Розв'язання та перемога
+
+- Вихід із `night` застосовує блок Коханки, лікування й постріли мафії
+  (на ознайомчому раунді — пропускається).
+- Вихід із `voting` вигнаного визначає більшістю; далі — крок «останнє слово»,
+  після якого гравець фактично вибуває.
+- Мафія вбиває, лише якщо всі живі незаблоковані мафіозі обрали **одну** ціль.
+- **Мирні перемагають**, коли вся мафія вибула.
+- **Мафія перемагає**, коли її кількість зрівнялася з кількістю мирних або
+  перевищила її.
+
+---
+
+## Захист і надійність
+
+Те, що робить сервер стійким до зловживань і витоку ресурсів:
+
+### Анти-брутфорс (rate limiting)
+Fixed-window лімітер (`internal/httpx/rate_limit.go`) з ключем
+`scope | IP | token`:
+- `POST /api/auth/login` — за замовчуванням **30 запитів/хв з одного IP**.
+- мутації кімнат (`create`/`join`/`leave`/`start`) — **60/хв**.
+
+Перевищення → `429 Too Many Requests`. Прострочені «відра» автоматично
+очищаються, щоб мапа не росла безмежно. IP визначається з `X-Forwarded-For` /
+`X-Real-IP` / `RemoteAddr` (коректно працює за проксі/хостингом).
+
+### CORS і WebSocket allowlist
+HTTP-запити приймаються лише з Origin зі списку `CORS_ALLOWED_ORIGINS`, а
+WebSocket — із `WS_ALLOWED_ORIGINS`. Обидва беруться з env, тож прод-домен
+налаштовується без зміни коду. Підтримується `*` для повного відкриття (для dev).
+
+### Сесії
+Токени сесій живуть 24 години і чистяться лінькувато (lazy eviction) при кожному
+записі — прострочені токени стають недійсними.
+
+### Анти-чит (приватні в'юхи)
+`GET /api/games/{roomId}` повертає **персональну** в'юху:
+- кожен бачить лише свою роль;
+- мафія бачить звичайних мафіозі (але не Коханку);
+- комісар бачить лише результат своєї перевірки (місто/мафія);
+- решта ролей прихована до `final`;
+- нічні дії «тихі» — за таймінгом броадкастів не вирахувати, хто живий.
+
+### Гігієна пам'яті (двірники)
+Дві лінії захисту від накопичення покинутих ігор у пам'яті:
+
+1. **Миттєве прибирання:** коли останній гравець виходить через «Вийти», кімната
+   **й її гра** видаляються одразу.
+2. **Авто-прибирання за таймером** (`internal/app/presence.go`): фоновий двірник
+   раз на **30 секунд** перевіряє ігри. Якщо гру **жоден учасник не відкривав 5
+   хвилин** (усі просто закрили вкладки), вона разом із кімнатою видаляється.
+
+   Присутність визначається без жодної зміни клієнта: успішний `GET` стану гри
+   можливий **лише для учасника саме цієї гри**, а клієнт і так робить цей запит
+   на кожне оновлення по WebSocket. Тож під час живої гри таймер постійно
+   скидається, а покинута — ні.
+
+---
+
+## Голос і відео (LiveKit)
+
+Сервер не проксує медіа — він лише **видає короткоживучі токени доступу** до
+кімнати LiveKit (SFU крутиться в LiveKit Cloud).
+
+- Ендпоінт `POST /api/games/{roomId}/voice-token` повертає `{ token, url }`
+  тільки учаснику кімнати.
+- Токен — це стандартний **HS256 JWT**, підписаний `LIVEKIT_API_SECRET`, із
+  грантом на конкретну кімнату. Він збирається вручну стандартною бібліотекою
+  (`crypto/hmac`, `encoding/json`, `encoding/base64`), щоб **не тягти важкий
+  LiveKit server SDK** із десятками залежностей.
+- Якщо `LIVEKIT_*` змінні не задані — ендпоінт повертає `503`, а гра працює без
+  голосу/відео.
+
+Логіка «хто кого чує/бачить» (мафія вночі тощо) реалізована на клієнті через
+дозволи підписки LiveKit — див. README клієнта.
+
+---
+
+## Деплой
+
+- **Бекенд** деплоїться на **Heroku** (Go buildpack). Деплой-специфічні файли
+  (`Procfile`, підтримка `$PORT`) лежать у гілці **`deploy`**, яка = `develop` +
+  ці файли. Розробка ведеться у `develop`, зміни переносяться в `deploy`
+  (cherry-pick) і деплояться кнопкою **Deploy Branch `deploy`**.
+- На Heroku мають бути задані `LIVEKIT_URL`, `LIVEKIT_API_KEY`,
+  `LIVEKIT_API_SECRET` і `CORS_ALLOWED_ORIGINS` (домен фронтенду).
+- **Фронтенд** ([`mafia-client`](../mafia-client)) хоститься окремо на Cloudflare.
+
+---
+
+## Swagger / документація API
+
+Інтерактивна документація всіх ендпоінтів (з прикладами й «try it out»):
+
 ```
 http://localhost:8080/api/docs
 ```
-
-Quick reference:
-
-### Auth
-- `POST /api/auth/login` — Create/get user by nickname
-- `POST /api/auth/logout` — Revoke token
-- `GET /api/me` — Get current user info
-- `GET /api/recovery` — Restore rooms/games for current token after reconnect/reload
-
-### Rooms
-- `GET /api/rooms` — List available rooms
-- `POST /api/rooms` — Create new room
-- `GET /api/rooms/{roomId}` — Get room details
-- `POST /api/rooms/{roomId}/join` — Join room
-- `POST /api/rooms/{roomId}/leave` — Leave room
-- `POST /api/rooms/{roomId}/start` — Start game (owner only)
-
-### Games
-- `GET /api/games/{roomId}` — Get game state (personalized)
-- `POST /api/games/{roomId}/phase` — Set phase (owner only)
-- `POST /api/games/{roomId}/next-phase` — Advance phase (owner only)
-- `POST /api/games/{roomId}/actions` — Submit night action/vote
-
-**Minimum players to start room:** 6
-
-**Phase flow:** night → day → voting → (repeat or final)
-
-**Introductory first round (round 1):** the game opens with an acquaintance round.
-On the intro night, roles wake in the usual order but every night action is rejected
-(`409`) and nobody is killed — the mafia only learn who their teammates are. The intro
-day runs speeches and discussion but has **no exile vote**; after `day_discussion` the
-server goes straight into the first full night of round 2. Real night actions and voting
-take effect from round 2 onward.
-
-`GET /api/games/{roomId}` returns a private view for the authenticated player:
-
-- every player sees their own role
-- mafia players see ordinary mafia teammates, but not the mistress
-- commissioner sees inspected player side only: town or mafia
-- other roles stay hidden until `final`
-- private night actions and commissioner inspect results are not shown to unrelated players
-
-Current game snapshot starts with:
-
-- `phase: night`
-- `step: night_mistress` (or `night_doctor` when no Mistress in the game)
-- `round: 1`
-- `phaseStartedAt`
-- `phaseEndsAt`
-- `phaseDurationSeconds`
-- room players copied into game players
-- roles assigned via cryptographically random Fisher-Yates shuffle based on player count:
-
-| Players | Mafia | Commissioner | Doctor | Mistress | Civilians |
-|---------|-------|--------------|--------|----------|-----------|
-| 6–7     | 1     | 1            | 1      | —        | 3–4       |
-| 8–10    | 2     | 1            | 1      | —        | 4–6       |
-| 11–13   | 2     | 1            | 1      | 1        | 6–8       |
-| 14–16   | 3     | 1            | 1      | 1        | 8–10      |
-
-Change phase:
-
-```bash
-curl -X POST http://localhost:8080/api/games/<ROOM_ID>/phase \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <TOKEN>" \
-  -d "{\"phase\":\"day\"}"
-```
-
-Allowed phases:
-
-- `night`
-- `day`
-- `voting`
-- `final`
-
-Switching from a non-night phase back to `night` increments the game round.
-
-Preferred step flow:
-
-- Night: steps for roles present in the game only — `night_mistress` (11+ players), `night_doctor`, `night_commissioner`, `night_mafia`
-- If a role holder dies, their night step still runs the full timer (preserves incognito).
-- `day_speech` once per alive player, rotating first speaker by round
-- `day_discussion -> voting -> (next night)`
-- `POST /api/games/{roomId}/next-phase` advances the current step.
-- The backend also advances expired steps automatically.
-
-Default step durations:
-
-- `night_mistress`: 15 seconds
-- `night_doctor`: 15 seconds
-- `night_commissioner`: 15 seconds
-- `night_mafia`: 30 seconds
-- `day_speech`: 60 seconds per alive speaker
-- `day_discussion`: 90 seconds
-- `voting`: 35 seconds
-- `final`: no timer
-
-Submit action:
-
-```bash
-curl -X POST http://localhost:8080/api/games/<ROOM_ID>/actions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <TOKEN>" \
-  -d "{\"type\":\"vote\",\"targetId\":\"<PLAYER_ID>\"}"
-```
-
-Allowed action flow:
-
-- `night`:
-  - `mistress_block` by mistress during `night_mistress`
-  - `heal` by doctor during `night_doctor`
-  - `inspect` by commissioner during `night_commissioner`
-  - `mafia_kill` by mafia
-- `voting`:
-  - `vote` by alive players
-- All night actions are rejected during the introductory round 1 (no actions, no kill).
-
-Phase resolution:
-
-- Leaving `night` resolves mistress block, doctor heal and mafia shots (skipped on the intro round 1).
-- Leaving `voting` resolves exile by vote majority (no exile on the intro round 1).
-- Mafia kill succeeds only when all alive unblocked ordinary mafia choose the same target (one unblocked mafia is enough).
-- If all mafia-side players are dead, the game moves to `final`.
-- If mafia-side count is at least the alive town count, the game moves to `final`.
-
-Current dev limitation: WebSocket `game.updated` is a room-level signal, not a personalized payload. Clients refresh `GET /api/games/{roomId}` after the signal to receive their private view.
-
-### Realtime
-
-- `GET /ws`
-
-Events sent by server:
-
-- `rooms.updated`
-- `room.updated`
-- `room.deleted`
-- `game.updated` room-level signal after room start, phase/step changes and submitted `vote` actions (night actions are silent to preserve timing incognito)
