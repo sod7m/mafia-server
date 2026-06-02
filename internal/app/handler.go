@@ -24,6 +24,9 @@ type Handler struct {
 	realtime            *realtime.Hub
 	loginLimiter        *httpx.FixedWindowLimiter
 	roomMutationLimiter *httpx.FixedWindowLimiter
+	liveKitURL          string
+	liveKitAPIKey       string
+	liveKitAPISecret    string
 }
 
 type SecurityConfig struct {
@@ -31,6 +34,9 @@ type SecurityConfig struct {
 	WSAllowedOrigins           []string
 	LoginRateLimitPerMinute    int
 	RoomMutationsRatePerMinute int
+	LiveKitURL                 string
+	LiveKitAPIKey              string
+	LiveKitAPISecret           string
 }
 
 func DefaultSecurityConfig() SecurityConfig {
@@ -65,6 +71,9 @@ func NewHandlerWithConfig(ctx context.Context, store persistence.Store, security
 		realtime:            realtime.NewHubWithOrigins(securityConfig.WSAllowedOrigins),
 		loginLimiter:        httpx.NewFixedWindowLimiter(securityConfig.LoginRateLimitPerMinute, time.Minute),
 		roomMutationLimiter: httpx.NewFixedWindowLimiter(securityConfig.RoomMutationsRatePerMinute, time.Minute),
+		liveKitURL:          securityConfig.LiveKitURL,
+		liveKitAPIKey:       securityConfig.LiveKitAPIKey,
+		liveKitAPISecret:    securityConfig.LiveKitAPISecret,
 	}
 
 	mux := http.NewServeMux()
@@ -88,6 +97,7 @@ func NewHandlerWithConfig(ctx context.Context, store persistence.Store, security
 	mux.HandleFunc("POST /api/games/{roomId}/phase", handler.setGamePhase)
 	mux.HandleFunc("POST /api/games/{roomId}/next-phase", handler.advanceGamePhase)
 	mux.HandleFunc("POST /api/games/{roomId}/actions", handler.submitGameAction)
+	mux.HandleFunc("POST /api/games/{roomId}/voice-token", handler.voiceToken)
 	mux.Handle("GET /ws", handler.realtime)
 
 	handler.startPhaseTicker(ctx)
