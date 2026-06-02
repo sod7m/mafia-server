@@ -24,6 +24,7 @@ type Handler struct {
 	realtime            *realtime.Hub
 	loginLimiter        *httpx.FixedWindowLimiter
 	roomMutationLimiter *httpx.FixedWindowLimiter
+	presence            *presenceTracker
 	liveKitURL          string
 	liveKitAPIKey       string
 	liveKitAPISecret    string
@@ -71,6 +72,7 @@ func NewHandlerWithConfig(ctx context.Context, store persistence.Store, security
 		realtime:            realtime.NewHubWithOrigins(securityConfig.WSAllowedOrigins),
 		loginLimiter:        httpx.NewFixedWindowLimiter(securityConfig.LoginRateLimitPerMinute, time.Minute),
 		roomMutationLimiter: httpx.NewFixedWindowLimiter(securityConfig.RoomMutationsRatePerMinute, time.Minute),
+		presence:            newPresenceTracker(),
 		liveKitURL:          securityConfig.LiveKitURL,
 		liveKitAPIKey:       securityConfig.LiveKitAPIKey,
 		liveKitAPISecret:    securityConfig.LiveKitAPISecret,
@@ -101,6 +103,7 @@ func NewHandlerWithConfig(ctx context.Context, store persistence.Store, security
 	mux.Handle("GET /ws", handler.realtime)
 
 	handler.startPhaseTicker(ctx)
+	handler.startGameReaper(ctx)
 	return httpx.WithCORSOrigins(mux, securityConfig.CORSAllowedOrigins)
 }
 
@@ -372,6 +375,7 @@ func (h *Handler) startRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	game := h.games.StartGame(room)
+	h.presence.touch(game.RoomID)
 	h.broadcastRoomUpdated(room)
 	h.broadcastGameUpdated(game.RoomID)
 	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Room{"room": room})
@@ -411,6 +415,10 @@ func (h *Handler) getGame(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, games.ErrGameNotFound.Error())
 		return
 	}
+
+	// A participant fetched their game: mark the room as still occupied so the
+	// reaper does not tear it down.
+	h.presence.touch(roomID)
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
 }
@@ -467,6 +475,7 @@ func (h *Handler) setGamePhase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.presence.touch(roomID)
 	h.broadcastGameUpdated(game.RoomID)
 	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
 }
@@ -510,6 +519,7 @@ func (h *Handler) advanceGamePhase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.presence.touch(roomID)
 	h.broadcastGameUpdated(game.RoomID)
 	httpx.WriteJSON(w, http.StatusOK, map[string]domain.Game{"game": games.ViewForPlayer(game, user.ID)})
 }
@@ -562,6 +572,8 @@ func (h *Handler) submitGameAction(w http.ResponseWriter, r *http.Request) {
 		h.writeGameError(w, err)
 		return
 	}
+
+	h.presence.touch(roomID)
 
 	// Votes are public — broadcast immediately.
 	// Night actions are silent: broadcasting on submission would let observers

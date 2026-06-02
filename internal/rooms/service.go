@@ -105,6 +105,18 @@ func (s *Service) GetRoom(roomID string) (domain.Room, bool) {
 	return cloneRoom(room), true
 }
 
+// DeleteRoom removes a room unconditionally. Used by the background reaper to
+// clear out abandoned rooms whose game has gone idle. No-op if absent.
+func (s *Service) DeleteRoom(roomID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.rooms[roomID]; !ok {
+		return
+	}
+	delete(s.rooms, roomID)
+	s.persistLocked()
+}
+
 func (s *Service) CreateRoom(user domain.UserSession, name string, maxPlayers int) (domain.Room, error) {
 	cleanName := strings.TrimSpace(name)
 	if cleanName == "" || len([]rune(cleanName)) > 80 {

@@ -194,6 +194,18 @@ func (s *Service) Delete(roomID string) {
 	s.persistLocked()
 }
 
+// RoomIDs returns the room IDs of all live games. Used by the background reaper
+// to find games that should be checked for abandonment.
+func (s *Service) RoomIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]string, 0, len(s.byRoom))
+	for id := range s.byRoom {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func ViewForPlayer(game domain.Game, viewerID string) domain.Game {
 	view := cloneGame(game)
 	viewer, ok := playerByID(game.Players, viewerID)
