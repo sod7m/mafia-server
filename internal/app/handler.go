@@ -341,6 +341,9 @@ func (h *Handler) leaveRoom(w http.ResponseWriter, r *http.Request) {
 	if room, ok := h.rooms.GetRoom(roomID); ok {
 		h.broadcastRoomUpdated(room)
 	} else {
+		// The room is gone (last player left): drop its game state too so
+		// abandoned games do not accumulate in memory.
+		h.games.Delete(roomID)
 		h.broadcastRoomDeleted(roomID)
 	}
 	httpx.WriteNoContent(w)
