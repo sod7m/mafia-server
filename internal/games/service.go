@@ -181,6 +181,19 @@ func (s *Service) GetByRoomID(roomID string) (domain.Game, bool) {
 	return cloneGame(game), true
 }
 
+// Delete removes the game state for a room, freeing its memory. It is called
+// when the room itself is removed (e.g. the last player has left), so that
+// abandoned games do not accumulate indefinitely. No-op if absent.
+func (s *Service) Delete(roomID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byRoom[roomID]; !ok {
+		return
+	}
+	delete(s.byRoom, roomID)
+	s.persistLocked()
+}
+
 func ViewForPlayer(game domain.Game, viewerID string) domain.Game {
 	view := cloneGame(game)
 	viewer, ok := playerByID(game.Players, viewerID)
