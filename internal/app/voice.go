@@ -59,6 +59,7 @@ func (h *Handler) voiceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.presence.touch(roomID)
 	httpx.WriteJSON(w, http.StatusOK, voiceTokenResponse{Token: token, URL: h.liveKitURL})
 }
 
