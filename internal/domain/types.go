@@ -57,6 +57,7 @@ const (
 	GameStepDaySpeech         GameStep = "day_speech"
 	GameStepDayDiscussion     GameStep = "day_discussion"
 	GameStepVoting            GameStep = "voting"
+	GameStepDayLastWord       GameStep = "day_last_word"
 	GameStepFinal             GameStep = "final"
 )
 
@@ -133,6 +134,7 @@ type Game struct {
 	ActivePlayerNickname string       `json:"activePlayerNickname,omitempty"`
 	FirstSpeakerIndex    int          `json:"firstSpeakerIndex"`
 	SpeechIndex          int          `json:"speechIndex"`
+	PendingExileID       string       `json:"pendingExileId,omitempty"`
 	Players              []GamePlayer `json:"players"`
 	Actions              []GameAction `json:"actions"`
 	Events               []GameEvent  `json:"events"`
