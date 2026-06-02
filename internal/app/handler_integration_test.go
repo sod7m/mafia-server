@@ -411,14 +411,28 @@ func TestVotingResolvesExile(t *testing.T) {
 		mustStatus(t, voteStatus, http.StatusOK, voteBody)
 	}
 
-	resolvStatus, resolvBody := api.post("/api/games/"+roomID+"/next-phase", owner.Token, nil)
-	mustStatus(t, resolvStatus, http.StatusOK, resolvBody)
+	// Voting resolves into the last-word step: the target is NOT eliminated yet.
+	lwStatus, lwBody := api.post("/api/games/"+roomID+"/next-phase", owner.Token, nil)
+	mustStatus(t, lwStatus, http.StatusOK, lwBody)
+	lwGame := getGameFor(t, api, owner.Token, roomID)
+	if lwGame.Step != domain.GameStepDayLastWord {
+		t.Fatalf("expected last-word step after voting, got %s", lwGame.Step)
+	}
+	for _, player := range lwGame.Players {
+		if player.ID == voteTarget.ID && !player.IsAlive {
+			t.Fatalf("voted target %s should still be alive during last word", voteTarget.ID)
+		}
+	}
+
+	// Last word ends -> exile is finalized.
+	finStatus, finBody := api.post("/api/games/"+roomID+"/next-phase", owner.Token, nil)
+	mustStatus(t, finStatus, http.StatusOK, finBody)
 
 	game := getGameFor(t, api, owner.Token, roomID)
 	for _, player := range game.Players {
 		if player.ID == voteTarget.ID {
 			if player.IsAlive {
-				t.Fatalf("expected voted target %s to be exiled", voteTarget.ID)
+				t.Fatalf("expected voted target %s to be exiled after last word", voteTarget.ID)
 			}
 			return
 		}

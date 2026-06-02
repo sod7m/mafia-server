@@ -45,6 +45,7 @@ var stepDurations = map[domain.GameStep]time.Duration{
 	domain.GameStepDaySpeech:         60 * time.Second,
 	domain.GameStepDayDiscussion:     90 * time.Second,
 	domain.GameStepVoting:            35 * time.Second,
+	domain.GameStepDayLastWord:       60 * time.Second,
 	domain.GameStepFinal:             0,
 }
 
@@ -423,6 +424,16 @@ func advanceStep(game *domain.Game, now time.Time, reason string) {
 		advanced = true
 	case domain.GameStepVoting:
 		resolveVoting(game)
+		if game.PendingExileID != "" {
+			startLastWord(game, now)
+		} else if maybeFinishGame(game) {
+			setFinal(game, now)
+		} else {
+			startNight(game, now, true)
+		}
+		advanced = true
+	case domain.GameStepDayLastWord:
+		finalizeExile(game)
 		if maybeFinishGame(game) {
 			setFinal(game, now)
 		} else {
@@ -580,7 +591,7 @@ func phaseForStep(step domain.GameStep) domain.GamePhase {
 	switch step {
 	case domain.GameStepNightMistress, domain.GameStepNightDoctor, domain.GameStepNightCommissioner, domain.GameStepNightMafia:
 		return domain.GamePhaseNight
-	case domain.GameStepDaySpeech, domain.GameStepDayDiscussion:
+	case domain.GameStepDaySpeech, domain.GameStepDayDiscussion, domain.GameStepDayLastWord:
 		return domain.GamePhaseDay
 	case domain.GameStepVoting:
 		return domain.GamePhaseVoting
@@ -617,11 +628,17 @@ func speechOrder(game domain.Game) []domain.GamePlayer {
 }
 
 func resolveBeforeLeavingPhase(game *domain.Game) {
+	// Manual phase override: finalize a pending last word immediately.
+	if game.Step == domain.GameStepDayLastWord {
+		finalizeExile(game)
+		return
+	}
 	switch game.Phase {
 	case domain.GamePhaseNight:
 		resolveNight(game)
 	case domain.GamePhaseVoting:
 		resolveVoting(game)
+		finalizeExile(game)
 	}
 }
 
@@ -953,15 +970,45 @@ func resolveVoting(game *domain.Game) {
 		return
 	}
 
-	setPlayerAlive(game.Players, targetID, false)
+	// Don't eliminate yet — the exiled player gets a last-word window first.
+	game.PendingExileID = targetID
 	game.Events = append(game.Events, newGameEvent(
-		"vote.exile.resolved",
-		fmt.Sprintf("%s вигнаний голосуванням міста.", target.Nickname),
+		"vote.exile.pending",
+		fmt.Sprintf("%s вигнаний голосуванням. Останнє слово.", target.Nickname),
 		game.Phase,
 		game.Round,
 		"",
 		target.ID,
 	))
+}
+
+// startLastWord opens the last-word window for the pending-exile player.
+func startLastWord(game *domain.Game, now time.Time) {
+	setStepWindow(game, domain.GameStepDayLastWord, now)
+	if target, ok := playerByID(game.Players, game.PendingExileID); ok {
+		game.ActivePlayerID = target.ID
+		game.ActivePlayerNickname = target.Nickname
+	}
+}
+
+// finalizeExile eliminates the pending-exile player after their last word.
+func finalizeExile(game *domain.Game) {
+	if game.PendingExileID == "" {
+		return
+	}
+	target, ok := playerByID(game.Players, game.PendingExileID)
+	if ok {
+		setPlayerAlive(game.Players, game.PendingExileID, false)
+		game.Events = append(game.Events, newGameEvent(
+			"vote.exile.resolved",
+			fmt.Sprintf("%s вигнаний голосуванням міста.", target.Nickname),
+			game.Phase,
+			game.Round,
+			"",
+			target.ID,
+		))
+	}
+	game.PendingExileID = ""
 }
 
 func actionsForCurrentPhase(game domain.Game) []domain.GameAction {

@@ -590,3 +590,28 @@ func TestViewForMafiaDoesNotRevealMistress(t *testing.T) {
 		t.Fatal("expected mafia viewer not to see mistress role")
 	}
 }
+
+// Seating order must be identical for every viewer — the mafia rely on a fixed
+// board layout to gesture (e.g. "finger down" at the tile below a player).
+func TestSeatingOrderIdenticalForAllViewers(t *testing.T) {
+	service := NewService() // real crypto shuffle (not the identity test perm)
+	game := service.StartGame(testRoom(11))
+
+	baseOrder := make([]string, len(game.Players))
+	for index, player := range game.Players {
+		baseOrder[index] = player.ID
+	}
+
+	for _, viewer := range game.Players {
+		view := ViewForPlayer(game, viewer.ID)
+		if len(view.Players) != len(baseOrder) {
+			t.Fatalf("viewer %s sees %d players, want %d", viewer.ID, len(view.Players), len(baseOrder))
+		}
+		for index, player := range view.Players {
+			if player.ID != baseOrder[index] {
+				t.Fatalf("viewer %s sees different seating at index %d: got %s, want %s",
+					viewer.ID, index, player.ID, baseOrder[index])
+			}
+		}
+	}
+}
