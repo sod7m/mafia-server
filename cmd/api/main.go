@@ -34,6 +34,9 @@ func main() {
 	wsAllowedOrigins := splitCSV(getenv("WS_ALLOWED_ORIGINS", "localhost:5173,127.0.0.1:5173"))
 	loginRateLimitPerMinute := getenvInt("RATE_LIMIT_LOGIN_PER_MINUTE", 30)
 	roomMutationRateLimitPerMinute := getenvInt("RATE_LIMIT_ROOM_MUTATION_PER_MINUTE", 60)
+	liveKitURL := strings.TrimSpace(getenv("LIVEKIT_URL", ""))
+	liveKitAPIKey := strings.TrimSpace(getenv("LIVEKIT_API_KEY", ""))
+	liveKitAPISecret := strings.TrimSpace(getenv("LIVEKIT_API_SECRET", ""))
 
 	store := persistence.NewNoopStore()
 	if databaseURL != "" {
@@ -54,6 +57,9 @@ func main() {
 		WSAllowedOrigins:           wsAllowedOrigins,
 		LoginRateLimitPerMinute:    loginRateLimitPerMinute,
 		RoomMutationsRatePerMinute: roomMutationRateLimitPerMinute,
+		LiveKitURL:                 liveKitURL,
+		LiveKitAPIKey:              liveKitAPIKey,
+		LiveKitAPISecret:           liveKitAPISecret,
 	})
 	server := &http.Server{
 		Addr:    addr,
